@@ -106,7 +106,7 @@ Changes in v1.0.6:
     the LTX Director tab (and via the "⟲ Sync Window Settings" button) the
     timeline toolbar adopts the generator's Sliding Window Size / Window
     Frames Overlap values; Apply continues to push timeline → generator
-  - Branded header: version number + "created by Mad Hatter" with logo
+  - Branded header: version number + "created by The-ShadowWalker" with logo
     (tab name unchanged)
 Changes in v1.0.5:
   - Sliding-window relay now matches WanGP exactly (verified against wgp.py):
@@ -1319,13 +1319,13 @@ class LTXDirectorPlugin(WAN2GPPlugin):
     # ── Header (branding) ──────────────────────────────────────────────────
 
     def _build_header_html(self) -> str:
-        """🎬 LTX Director v<version> · created by Mad Hatter (with MH logo)."""
+        """🎬 LTX Director v<version> · created by The-ShadowWalker (with MH logo)."""
         logo_html = ""
         try:
             if MH_LOGO_PATH.exists():
                 b64 = base64.b64encode(MH_LOGO_PATH.read_bytes()).decode("ascii")
                 logo_html = (
-                    f'<img src="data:image/jpeg;base64,{b64}" alt="Mad Hatter" '
+                    f'<img src="data:image/jpeg;base64,{b64}" alt="The-ShadowWalker" '
                     f'style="width:34px;height:34px;border-radius:50%;'
                     f'object-fit:cover;box-shadow:0 0 6px rgba(0,0,0,.6);" />'
                 )
@@ -1341,7 +1341,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             '<span style="display:inline-flex;align-items:center;gap:7px;'
             'font-size:.85em;opacity:.85;">created by'
             f'{logo_html}'
-            '<b>Mad Hatter</b></span>'
+            '<b>The-ShadowWalker</b></span>'
             '</div>'
         )
 
