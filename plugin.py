@@ -1,6 +1,173 @@
 """
-LTX Director — Wan2GP Plugin  (v1.0.15)
+LTX Director — Wan2GP Plugin  (v1.2.9)
 ==============================
+Changes in v1.2.9:
+  - Generate Here progress now shows in ONE place only — the status area above
+    the model selector. The duplicate progress readout at the bottom of the tab
+    is gone; the bottom status line is reserved for Apply / Preview messages.
+Changes in v1.2.8:
+  - FIX (Generate Here did nothing after "admitted"): the handler chained
+    submit_task().result(), which blocked the plugin worker BEFORE the WebUI
+    queue could be pumped — so the job was admitted but never ran. Reworked to
+    match WanGP's own video-process plugin: submit the task, then poll
+    job.done while draining job.events for progress, and only call result()
+    once the job is finished. The queue now pumps and generation actually runs.
+  - NEW progress/status bar: while generating, the status area shows the live
+    phase and a step-based progress bar (current/total steps), updated from the
+    job's event stream, similar to the Video Generator's status.
+  - NEW Category + "Resolution Budget (Pixels will be reallocated to preserve
+    Inputs W/H ratio)" controls in Advanced → Misc, mirroring the Video
+    Generator. The Category dropdown filters the resolution list; both are
+    populated from the model via WanGP's own resolution helpers.
+Changes in v1.2.7:
+  - FIX (Sync froze the whole page): clicking "⟲ Sync values from current
+    model" could lock every clickable element until a refresh. The sync handler
+    could raise (or emit a malformed dropdown-choices update) into the event
+    chain, which freezes the Gradio client. Both switch_model and
+    refresh_advanced_from_model are now fully wrapped so they can NEVER raise —
+    on any error they return a correctly-shaped no-op + a status message. All
+    dropdown choices fed to updates are sanitised to clean (label, value)
+    tuples first.
+  - FIX (Quality tab disappeared): when sync ran without a resolvable model, the
+    visibility logic hid model-gated tabs (incl. Quality). Sync now leaves tab
+    and field visibility UNCHANGED when it can't resolve the active model, and
+    only retargets visibility when the model is known. The Quality tab no longer
+    vanishes.
+Changes in v1.2.6:
+  - FIX (page freeze / dead clicks): loading or recovering a saved job before
+    touching anything could freeze EVERY clickable element until a page
+    refresh. Cause: two handlers were registered on main_tabs.select, so they
+    fired on every tab change across the whole app and ran heavy API calls
+    (get_current_model_settings / get_model_def) synchronously; colliding with
+    the restore flow errored the event chain and locked the Gradio client.
+    Both tab-select auto-sync handlers are removed. The Advanced fields and
+    LoRA / spatial dropdowns are now populated at build time and via the
+    explicit "⟲ Sync values from current model" button, so they work
+    immediately regardless of whether you restore first.
+  - FIX (Generate Here: "Invalid filename ... You must provide at least one
+    Reference Image"): the API queue needs image_refs / image_start as FILE
+    PATHS, not PIL objects. Reference images are now written to temp PNGs and
+    passed as paths for the Generate Here path (Apply to Generator still uses
+    in-memory images).
+  - Spatial Upsampling choices are also seeded at build time for the initial
+    model, and perturbation_layers gained allow_custom_value.
+Changes in v1.2.5:
+  - FIX (Generate Here failed): the API queue rejected the task with
+    "Settings must contain 'model_type'". The settings dict from
+    get_current_model_settings didn't always include model_type, so it's now
+    set explicitly from the active/selected model (with base_model_type filled
+    from the model_def) before submitting.
+  - Post Processing → Spatial Upsampling now lists the REAL options: method and
+    scale choices are pulled live from WanGP's upsampler API
+    (postprocessing.upsamplers) for the selected model, including model VAE
+    upsamplers, instead of a short hard-coded list.
+  - Plugin list entry cleaned up: the description is now a short "what it does"
+    line (no per-version changelog), matching plugin_info.json.
+Changes in v1.2.4:
+  - FIX (crash): the LoRA strength sliders used Gradio's @gr.render to build
+    sliders dynamically, which registered event handlers that aren't part of
+    the session's queue config under WanGP's plugin event-wrapping — moving a
+    slider raised "KeyError: <n>" in gradio/queueing.py and 500'd the request.
+    Replaced with a FIXED POOL of pre-built slider rows (12 LoRAs x 3 phases)
+    that are shown / hidden / relabelled by static handlers — no dynamic event
+    creation, so it no longer crashes. Behaviour is the same: one slider per
+    guidance phase per selected LoRA, writing "1;1 1;1"-style multipliers.
+  - FIX (warning): every Advanced dropdown that receives a live model value now
+    sets allow_custom_value=True, silencing the "value ... is not in the list
+    of choices" warnings when a model reports an option this clone doesn't list.
+Changes in v1.2.3:
+  - LoRAs are now folder-grouped like the original: the selector uses WanGP's
+    native HierarchySelector (the same widget the Video Generator uses), built
+    from the model's LoRA folder, so sub-folders are preserved instead of a
+    flat list. Falls back to a flat multiselect dropdown only if that widget
+    can't be imported.
+  - Multipliers string format corrected to match WanGP and read left-to-right:
+    LoRAs are separated by SPACES on one line, phases within a LoRA by ';'.
+    Two LoRAs at two phases now reads "1;1 1;1" (was newline-separated before).
+    Selecting LoRAs auto-seeds this box with the default grid, preserving any
+    values already typed for LoRAs that stay selected; parsing accepts both the
+    space and newline forms.
+Changes in v1.2.2:
+  - LoRAs tab reworked so it actually works: the Activated LoRAs list is now
+    filled at tab-build time for the current model (and refreshed on model
+    switch / sync) from the model's LoRA folder via the get_lora_dir global,
+    so the dropdown opens with real choices and you can select as many as you
+    want.
+  - NEW per-LoRA strength sliders (default ON, hideable): a "Show strength
+    sliders" checkbox whose state is SAVED to config and restored next
+    session. When on, each selected LoRA gets one slider PER guidance phase —
+    1 phase = 1 bar, 2 phases = 2 bars, 3 = 3 — driven by the General tab's
+    Guidance Phases value. Sliders (0.0–2.0, default 1.0) write a WanGP-format
+    multipliers string ("1.0;0.8" per line, ';' separating phases) into the
+    still-editable LoRAs Multipliers box; existing text seeds the sliders so
+    toggling doesn't lose values.
+  - activated_loras + loras_multipliers are now passed into Generate Here so
+    LoRA selections and strengths actually reach generation.
+  - Confirmed joyai_echo is correctly treated as an LTX-2 (22B-class) finetune
+    in the model dropdown.
+Changes in v1.2.1:
+  - FIX: the Advanced → LoRAs dropdown was empty and didn't open. It now
+    fills from the selected model's LoRA folder (via the get_lora_dir global,
+    the same source the Downloads plugin uses) whenever you switch models /
+    sync, and is filterable like the original.
+  - FIX: the Post Processing → Spatial Upsampling dropdown showed no options;
+    it now offers the common methods (None / Lanczos / Lanczos x1.5 / x2) with
+    a scale selector, and accepts custom values.
+  - LAYOUT: Save/Load buttons are now aligned. The Session rows use equal-height
+    rows with bottom-aligned buttons (📂 Browse / 💾 Save, 🔄 Recover / ⟲ Sync
+    Windows, 📄 Browse File / 📥 Load Path) so they line up with their inputs
+    instead of staggering.
+  - LAYOUT: "🗑 Clear Timeline" moved directly under the timeline, ahead of the
+    Generate / Apply / Preview actions.
+  - Removed the "1:1 clone…" helper caption from the Advanced section.
+Changes in v1.2.0:
+  - NEW in-tab MODEL SELECTOR: a dropdown listing every LTX model the running
+    WanGP exposes — both the LTX-Video (ltxv_13B) and LTX-2 (ltx2_19B /
+    ltx2_22B / ltx2_22B_edit_anything / joyai_echo) families, plus any
+    finetunes — populated live from the plugin API. Picking one switches the
+    active WanGP model (writes model_choice_target the same way the Video
+    Generator does). A ⟲ Refresh button re-scans available models.
+  - ADVANCED section is now a model-reactive 1:1 CLONE of the Video
+    Generator's Advanced form for LTX models, built in a new ltx_advanced.py.
+    All 8 tabs are present (General, LoRAs, Steps Skipping, Post Processing,
+    Audio, Quality, Sliding Window, Misc.) with the full LTX field union, and
+    the fields/tabs shown adapt to the selected model exactly as WanGP does:
+    e.g. LTX-Video 13B hides negative prompt / guidance phases / Quality tab,
+    while LTX-2 22B shows guidance phases, audio + embedded guidance,
+    perturbation, CFG-star, self-refiner, distilled-step samplers, etc.
+    Visibility is derived from each model's model_def flags, so it stays
+    correct across models and WanGP updates instead of being hard-coded.
+  - Advanced values now feed generation by key (every managed key is written
+    straight into the WanGP settings dict), replacing the previous fixed
+    nine-field set.
+  - UI FIX: the Load Session drop-zone was rendering dark-on-dark and looked
+    invisible. Injected scoped CSS gives it (and the model row / advanced tab
+    container) WanGP's native bordered, theme-aware surface so it's clearly
+    visible in both light and dark themes.
+Changes in v1.1.0:
+  - NEW "🎬 Generate Here": generate the video directly from the LTX Director
+    tab via WanGP's plugin generation API (api.submit_task) — no more
+    transferring to the Video Generator tab and hunting for its Generate
+    button. The job is queued into the live WebUI queue and the finished
+    clip plays inline in a new result player on this tab. The original
+    "▶ Apply to Generator" workflow is unchanged and still available; the
+    old JS Apply+Generate relay is kept as a fallback for older WanGP builds
+    that lack the plugin gen API (the Generate Here button auto-disables
+    there with an explanatory note).
+  - NEW "⚙ Advanced generation settings" accordion mirroring the Video
+    Generator's Advanced controls as native widgets: inference steps, seed,
+    guidance scale, flow shift, resolution, generations-per-run, negative
+    prompt, and sliding-window size/overlap. Values auto-sync from the
+    current model on tab open (and via "⟲ Sync from current model"), and are
+    merged into the settings used by both Generate Here and Apply.
+  - LAYOUT overhaul to reduce clutter as features grow: primary actions
+    (Generate Here / Apply / Preview / Stop) now sit in one clear row right
+    under the timeline; the save/load/recover controls moved into a
+    collapsed "💾 Session" accordion; Advanced lives in its own collapsed
+    accordion. Less scrolling, clearer hierarchy.
+  - Internal: settings-building logic refactored into one shared
+    _assemble_settings() used by both Apply and Generate Here, so the two
+    paths can never drift apart.
 Changes in v1.0.15:
   - Save folder "📂 Browse…" button is now reliably visible: the save
     controls were split into two rows (Save / Load) and the button given a
@@ -155,7 +322,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.0.15"
+PLUGIN_VERSION = "1.2.9"
 
 PLUGIN_DIR       = Path(__file__).parent
 MH_LOGO_PATH     = PLUGIN_DIR / "assets" / "mh_logo.jpg"
@@ -697,12 +864,16 @@ def _build_prompt_relay(timeline_json: str, global_prompt: str, fps: float,
 class LTXDirectorPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
+        self.api            = None
+        self._wangp_session = None
+        self.has_gen_api    = False
+        self._selected_model_type = ""
         self.name        = PlugIn_Name
         self.version     = PLUGIN_VERSION
         self.description = (
-            "Unified timeline editor — drag images, write per-segment prompts, "
-            "and place audio clips on a single canvas to control LTX video generation. "
-            "Includes auto-save, save/load, and session recovery."
+            "Timeline editor for LTX video generation: drag images, write "
+            "per-segment prompts, and place audio clips on one canvas to direct "
+            "LTX video output."
         )
 
     def setup_ui(self) -> None:
@@ -710,7 +881,12 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         self.request_component("refresh_form_trigger")
         self.request_component("main_tabs")
         self.request_component("generate_btn")
+        # For the in-tab model selector: model_choice_target is the hidden Text
+        # box WanGP watches to switch the active model; goto_model_type formats
+        # the "<model_type>|<timestamp>" value that triggers the switch.
+        self.request_component("model_choice_target")
         self.request_global("get_current_model_settings")
+        self.request_global("get_lora_dir")
         self.add_custom_js(self._build_bridge_js())
         self.add_tab(
             tab_id=PlugIn_Id,
@@ -718,7 +894,23 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             component_constructor=self.create_ui,
         )
 
-    def create_ui(self, *args, **kwargs):
+    def create_ui(self, api=None, *args, **kwargs):
+        # When the running WanGP build exposes the plugin generation API, the
+        # PluginManager injects a GradioWanGPSession as the first positional arg
+        # and runs this constructor inside session.plugin_ui_context(). Any
+        # gr.Button.click whose handler references this session is then auto-
+        # wrapped to queue the gen into the live WebUI queue and stream progress
+        # — that is what powers the new "▶ Generate Here" button. On older builds
+        # api is None and we fall back to the JS "Apply + Generate" bridge.
+        # Store the injected session under BOTH a friendly name and the exact
+        # attribute name (_wangp_session) that WanGP's plugin_ui_context uses to
+        # detect api-driven button handlers. The detector wraps a gr.Button.click
+        # only if its handler references self._wangp_session (or _api), so the
+        # generate_here handler below reads self._wangp_session specifically.
+        self.api = api
+        self._wangp_session = api
+        self.has_gen_api = api is not None
+
         gr.HTML(self._build_header_html())
         gr.Markdown(
             "Place **image keyframes**, **text prompts**, and **audio clips** on the timeline. "
@@ -758,41 +950,174 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             elem_id="wdc_timeline_wrapper",
         )
 
-        # ── Save area ──────────────────────────────────────────────────────
+        # Clear sits directly under the timeline, ahead of the action buttons.
+        with gr.Row(elem_id="wdc-clear-row"):
+            clear_btn_v = gr.Button("🗑 Clear Timeline", variant="secondary",
+                                    scale=1, elem_id="wdc-clear-btn", min_width=160)
+
         _cfg = _load_config()
-        with gr.Row():
-            project_name_box = gr.Textbox(
-                label="Project name", value=_cfg.get("project_name", "ltx_project"), scale=2,
-                elem_id="wdc-project-name", max_lines=1,
-                info="Used in the saved filename: <project>_<date>_<time>.zip",
-            )
-            save_folder_box = gr.Textbox(
-                label="Save folder", value=_cfg.get("save_folder", ""), scale=4,
-                elem_id="wdc-save-folder", max_lines=1,
-                placeholder="Leave empty for browser download only",
-                info="Sessions are written directly into this folder (remembered between runs).",
-            )
-            browse_btn  = gr.Button("📂 Browse…",      variant="secondary", scale=1, elem_id="wdc-browse-btn", min_width=120)
-            save_btn    = gr.Button("💾 Save Session", variant="primary",   scale=1, elem_id="wdc-save-btn",   min_width=130)
 
-        # ── Load / Recover row ─────────────────────────────────────────────
-        with gr.Row():
-            load_file   = gr.File(label="Load Session (.zip / .json)", file_types=[".zip", ".json"], scale=3, elem_id="wdc-load-file")
-            recover_btn = gr.Button("🔄 Recover Last",   variant="secondary", scale=1, elem_id="wdc-recover-btn", min_width=130)
-            winsync_btn = gr.Button("⟲ Sync Window Settings", variant="secondary", scale=1,
-                                    elem_id="wdc-winsync-btn", min_width=150)
-            dl_file     = gr.File(label="Download",      visible=False,       scale=1, elem_id="wdc-dl-file")
-
-        # ── Load from path (bypasses browser upload — any file size) ───────
-        with gr.Row():
-            load_path_box = gr.Textbox(
-                label="Load from path (reads directly from disk — use this for large sessions)",
-                value=_cfg.get("load_path", str(AUTOSAVE_PATH) if AUTOSAVE_PATH.exists() else ""),
-                placeholder=str(AUTOSAVE_PATH),
-                scale=4, max_lines=1, elem_id="wdc-load-path",
+        # ═══════════════════════════════════════════════════════════════════
+        #  PRIMARY ACTIONS  — the two ways to turn the timeline into a video.
+        #  Both kept side by side so neither workflow is removed:
+        #    • Apply to Generator → transfers settings to the Video Generator
+        #      tab (the original behavior).
+        #    • Generate Here      → queues the gen directly via the WanGP plugin
+        #      API and streams the result into the inline player below, so you
+        #      never have to leave this tab.
+        # ═══════════════════════════════════════════════════════════════════
+        with gr.Row(elem_id="wdc-primary-actions"):
+            generate_here_btn = gr.Button(
+                "🎬 Generate Here", variant="primary", scale=3,
+                elem_id="wdc-generate-here-btn",
+                interactive=self.has_gen_api,
             )
-            browse_file_btn = gr.Button("📄 Browse File…",   variant="secondary", scale=1, elem_id="wdc-browse-file-btn", min_width=140)
-            load_path_btn   = gr.Button("📥 Load from Path", variant="primary",   scale=1, elem_id="wdc-load-path-btn",   min_width=150)
+            apply_btn_v   = gr.Button("▶ Apply to Generator", variant="secondary", scale=2, elem_id="wdc-apply-btn")
+            preview_btn_v = gr.Button("👁 Preview Schedule",   variant="secondary", scale=1, elem_id="wdc-preview-btn")
+            cancel_here_btn = gr.Button(
+                "⏹ Stop", variant="stop", scale=1,
+                elem_id="wdc-cancel-here-btn", visible=self.has_gen_api,
+            )
+
+        if not self.has_gen_api:
+            gr.Markdown(
+                "ℹ️ *Direct **Generate Here** needs a WanGP build with the plugin "
+                "generation API. On this build, use **Apply to Generator** then "
+                "Generate on the Video Generator tab.*",
+                elem_id="wdc-no-api-note",
+            )
+
+        # ── Inline result player (filled live by Generate Here) ────────────
+        gen_status_md = gr.Markdown(visible=False, elem_id="wdc-gen-status")
+        result_video  = gr.Video(
+            label="Result", visible=False, interactive=False,
+            elem_id="wdc-result-video", autoplay=True,
+        )
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  🎚 MODEL  +  ⚙ ADVANCED GENERATION SETTINGS
+        #  The model dropdown lists every LTX model (LTX-Video + LTX-2 families
+        #  and their finetunes) and switches the live WanGP model when changed.
+        #  The Advanced section is a 1:1 clone of WanGP's Advanced form for LTX
+        #  models, built once with the full field union and made model-reactive:
+        #  selecting a model shows exactly the fields WanGP shows for it.
+        # ═══════════════════════════════════════════════════════════════════
+        # Import the model-reactive Advanced clone. Try relative (loaded as a
+        # package by WanGP), then fall back to absolute (folder on sys.path).
+        try:
+            from . import ltx_advanced as _adv
+        except Exception:
+            import importlib, sys as _sys
+            _sys.path.insert(0, str(PLUGIN_DIR))
+            _adv = importlib.import_module("ltx_advanced")
+
+        _ltx_models = self._list_ltx_models()
+        _model_choices = [(m["label"], m["model_type"]) for m in _ltx_models]
+        _model_value = _model_choices[0][1] if _model_choices else None
+        if _model_value:
+            self._selected_model_type = _model_value
+
+        with gr.Row(elem_id="wdc-model-row"):
+            model_selector = gr.Dropdown(
+                choices=_model_choices, value=_model_value,
+                label="🎚 Model (LTX only)", scale=4,
+                elem_id="wdc-model-selector", interactive=self.has_gen_api,
+                info="Switches the active WanGP model. Lists LTX-Video and LTX-2 models.",
+            )
+            refresh_models_btn = gr.Button(
+                "⟲ Refresh", variant="secondary", scale=1,
+                elem_id="wdc-refresh-models-btn", min_width=110,
+            )
+        model_status = gr.Markdown(elem_id="wdc-model-status")
+        if not self.has_gen_api:
+            gr.Markdown(
+                "ℹ️ *Model switching needs the WanGP plugin API; on this build "
+                "choose the model on the Video Generator tab.*",
+                elem_id="wdc-model-note",
+            )
+
+        with gr.Accordion("⚙ Advanced generation settings", open=False, elem_id="wdc-advanced"):
+            _initial_loras = self._list_loras_for_model(_model_value) if _model_value else []
+            _init_sp_methods, _init_sp_ratios = (
+                self._spatial_choices_for_model(_model_value) if _model_value else (None, None))
+            adv_map, adv_tabs = _adv.build_advanced_ui(
+                show_lora_sliders=bool(_cfg.get("lora_show_sliders", True)),
+                initial_loras=_initial_loras,
+                initial_spatial_methods=_init_sp_methods,
+                initial_spatial_ratios=_init_sp_ratios)
+            with gr.Row():
+                refresh_adv_btn = gr.Button(
+                    "⟲ Sync values from current model", variant="secondary",
+                    elem_id="wdc-refresh-adv-btn", min_width=240,
+                )
+            adv_status = gr.Markdown(elem_id="wdc-adv-status")
+
+        # Canonical ordered component list + tab list (used as handler I/O).
+        adv_order = _adv.ADV_FIELD_ORDER
+        adv_components = [adv_map[k] for k in adv_order if k in adv_map]
+        adv_keys       = [k for k in adv_order if k in adv_map]
+        adv_tab_keys   = list(adv_tabs.keys())
+        adv_tab_comps  = [adv_tabs[k] for k in adv_tab_keys]
+        loras_component = adv_map.get("loras_choices")
+        _loras_is_hierarchy = bool(adv_map.get("_loras_is_hierarchy"))
+
+        def _lora_update(loras, reset=False):
+            """Build the correct Gradio update for the LoRA selector, which may
+            be WanGP's HierarchySelector (needs a folder hierarchy) or a plain
+            multiselect dropdown (needs choices)."""
+            if _loras_is_hierarchy:
+                try:
+                    from shared.gradio.hierarchy_selector import build_choices_hierarchy as _bch
+                    upd = {"hierarchy": _bch(list(loras or []))}
+                except Exception:
+                    upd = {}
+            else:
+                upd = {"choices": list(loras or [])}
+            if reset:
+                upd["value"] = []
+            return gr.update(**upd)
+
+        # ═══════════════════════════════════════════════════════════════════
+        #  💾 SESSION  (save / load / recover — collapsed to declutter)
+        # ═══════════════════════════════════════════════════════════════════
+        with gr.Accordion("💾 Session — save, load & recover", open=False, elem_id="wdc-session"):
+            # Save row — inputs on the left, action buttons grouped on the right.
+            with gr.Row(equal_height=True, elem_id="wdc-save-row"):
+                project_name_box = gr.Textbox(
+                    label="Project name", value=_cfg.get("project_name", "ltx_project"), scale=3,
+                    elem_id="wdc-project-name", max_lines=1,
+                )
+                save_folder_box = gr.Textbox(
+                    label="Save folder", value=_cfg.get("save_folder", ""), scale=5,
+                    elem_id="wdc-save-folder", max_lines=1,
+                    placeholder="Leave empty for browser download only",
+                )
+                browse_btn = gr.Button("📂 Browse", variant="secondary", scale=1,
+                                       elem_id="wdc-browse-btn", min_width=120)
+                save_btn = gr.Button("💾 Save", variant="primary", scale=1,
+                                     elem_id="wdc-save-btn", min_width=120)
+
+            # Load row — upload box + action buttons aligned.
+            with gr.Row(equal_height=True, elem_id="wdc-load-row"):
+                load_file   = gr.File(label="Load Session (.zip / .json)", file_types=[".zip", ".json"], scale=5, elem_id="wdc-load-file")
+                recover_btn = gr.Button("🔄 Recover Last", variant="secondary", scale=1,
+                                        elem_id="wdc-recover-btn", min_width=140)
+                winsync_btn = gr.Button("⟲ Sync Windows", variant="secondary", scale=1,
+                                        elem_id="wdc-winsync-btn", min_width=140)
+                dl_file     = gr.File(label="Download", visible=False, scale=1, elem_id="wdc-dl-file")
+
+            # Load-from-path row — path box + browse/load buttons aligned.
+            with gr.Row(equal_height=True, elem_id="wdc-loadpath-row"):
+                load_path_box = gr.Textbox(
+                    label="Load from path (reads directly from disk — for large sessions)",
+                    value=_cfg.get("load_path", str(AUTOSAVE_PATH) if AUTOSAVE_PATH.exists() else ""),
+                    placeholder=str(AUTOSAVE_PATH),
+                    scale=6, max_lines=1, elem_id="wdc-load-path",
+                )
+                browse_file_btn = gr.Button("📄 Browse File", variant="secondary", scale=1,
+                                            elem_id="wdc-browse-file-btn", min_width=140)
+                load_path_btn   = gr.Button("📥 Load Path", variant="primary", scale=1,
+                                            elem_id="wdc-load-path-btn", min_width=140)
 
         save_status = gr.Markdown()
 
@@ -837,35 +1162,20 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             outputs=[winsync_payload_box, save_status],
         ).then(fn=None, inputs=[], outputs=[], js=_WINSYNC_PUSH_JS)
 
-        # Auto-sync whenever the LTX Director tab is opened (best-effort —
-        # the manual button above always works if this hook isn't supported).
-        try:
-            def _on_tab_select(state, evt: gr.SelectData):
-                label = getattr(evt, "value", None)
-                if label != PlugIn_Name:
-                    return gr.update(), gr.update()
-                payload, msg = sync_window_settings(state)
-                return payload, msg
+        # Note: window settings sync runs via the explicit "⟲ Sync Windows"
+        # button. We deliberately do NOT auto-sync on tab-select — registering
+        # heavy handlers on main_tabs.select fires them on every tab change
+        # across the whole app, which could error mid-restore and freeze the
+        # page (requiring a refresh). The manual button is reliable instead.
 
-            self.main_tabs.select(
-                fn=_on_tab_select,
-                inputs=[self.state],
-                outputs=[winsync_payload_box, save_status],
-            ).then(fn=None, inputs=[], outputs=[], js=_WINSYNC_PUSH_JS)
-        except Exception as exc:
-            log.warning("Tab-select auto-sync not available: %s", exc)
-
-        # ── Action buttons ─────────────────────────────────────────────────
-        with gr.Row():
-            apply_btn_v    = gr.Button("▶ Apply to Generator", variant="primary",   scale=2, elem_id="wdc-apply-btn")
-            preview_btn_v  = gr.Button("👁 Preview Schedule",   variant="secondary", scale=1, elem_id="wdc-preview-btn")
-            clear_btn_v    = gr.Button("🗑 Clear Timeline",      variant="secondary", scale=1, elem_id="wdc-clear-btn")
-
-        # Hidden trigger buttons (Python handlers)
-        apply_btn    = gr.Button("apply_trigger",    visible=False, elem_id="wdc-apply-trigger")
-        generate_btn = gr.Button("generate_trigger", visible=False, elem_id="wdc-generate-trigger")
-        preview_btn  = gr.Button("preview_trigger",  visible=False, elem_id="wdc-preview-trigger")
-        clear_btn    = gr.Button("clear_trigger",    visible=False, elem_id="wdc-clear-trigger")
+        # Hidden trigger buttons (Python handlers). apply/preview/clear are
+        # fired by the JS bridge after it pulls fresh state from the iframe;
+        # generate_here_trigger is fired the same way for the direct-gen path.
+        apply_btn           = gr.Button("apply_trigger",         visible=False, elem_id="wdc-apply-trigger")
+        generate_btn        = gr.Button("generate_trigger",      visible=False, elem_id="wdc-generate-trigger")
+        generate_here_btn_h = gr.Button("generate_here_trigger", visible=False, elem_id="wdc-generate-here-trigger")
+        preview_btn         = gr.Button("preview_trigger",       visible=False, elem_id="wdc-preview-trigger")
+        clear_btn           = gr.Button("clear_trigger",         visible=False, elem_id="wdc-clear-trigger")
 
         schedule_md = gr.Markdown(visible=False)
         status_md   = gr.Markdown()
@@ -1137,159 +1447,693 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             ]
             return gr.update(value="\n".join(lines), visible=True)
 
-        def apply_to_generator(tdata, global_p, fps, duration_sec, epsilon, project_name, state):
-            import time as _time
+        def _assemble_settings(tdata, global_p, fps, duration_sec, epsilon,
+                               project_name, state, adv_vals=None,
+                               lora_sel=None, lora_mult=None, as_paths=False):
+            """Build the WanGP settings dict from the timeline (shared by both
+            'Apply to Generator' and 'Generate Here'). Returns
+            (settings, summary_parts, info_dict) or raises on empty timeline.
+
+            adv_vals, when provided, is the tuple of Advanced-clone widget
+            values in adv_keys order; it's zipped into a dict and every present
+            key overrides the model's current settings.
+            """
             from PIL import Image as _PILImage
-            try:
-                # Prefer values from the hidden boxes (synced from timeline toolbar);
-                # fall back to what the timeline JSON carries directly.
-                _tparsed_pre = _parse_timeline(tdata)
-                if not fps or float(fps) <= 0:
-                    fps = _tparsed_pre.get("fps", 24)
-                if not duration_sec or float(duration_sec) <= 0:
-                    duration_sec = _tparsed_pre.get("durationSec", 5.0)
 
-                _fps_val     = int(fps or 24)
-                total_frames = max(1, round(float(duration_sec or 5) * _fps_val)) + 1
+            # Map positional advanced values to their setting keys.
+            adv = {}
+            if adv_vals:
+                adv = {k: v for k, v in zip(adv_keys, adv_vals)}
 
-                # Sliding window settings from the timeline toolbar,
-                # snapped to LTX 2.3's valid 8k+1 grid
-                _win_size = int(_tparsed_pre.get("slidingWindowSize", 0) or 0)
-                _win_ovl  = int(_tparsed_pre.get("slidingWindowOverlap", 0) or 0)
-                if _win_size > 0:
-                    _win_size, _win_ovl = _snap_window_pair(_win_size, _win_ovl)
+            _tparsed_pre = _parse_timeline(tdata)
+            if not fps or float(fps) <= 0:
+                fps = _tparsed_pre.get("fps", 24)
+            if not duration_sec or float(duration_sec) <= 0:
+                duration_sec = _tparsed_pre.get("durationSec", 5.0)
 
-                combined, locals_str, lengths_str, has_segs, prompt_mode = _build_prompt_relay(
-                    tdata, global_p, float(_fps_val),
-                    total_frames=total_frames, win_size=_win_size, win_overlap=_win_ovl,
-                )
-                if not has_segs:
-                    return "⚠️ Timeline is empty — add segments before applying.", gr.update()
+            _fps_val     = int(fps or 24)
+            total_frames = max(1, round(float(duration_sec or 5) * _fps_val)) + 1
 
-                parsed   = _tparsed_pre
-                segments = parsed.get("segments", [])
-                audio_segs = parsed.get("audioSegments", [])
+            # Sliding window settings: Advanced override (if set) else timeline,
+            # snapped to LTX 2.3's valid 8k+1 grid.
+            _win_size = int(_tparsed_pre.get("slidingWindowSize", 0) or 0)
+            _win_ovl  = int(_tparsed_pre.get("slidingWindowOverlap", 0) or 0)
+            if adv:
+                _adv_ws = int(adv.get("sliding_window_size", 0) or 0)
+                _adv_ov = int(adv.get("sliding_window_overlap", 0) or 0)
+                if _adv_ws > 0:
+                    _win_size, _win_ovl = _adv_ws, _adv_ov
+            if _win_size > 0:
+                _win_size, _win_ovl = _snap_window_pair(_win_size, _win_ovl)
 
-                settings = self.get_current_model_settings(state)
-                settings["prompt"] = combined
+            combined, locals_str, lengths_str, has_segs, prompt_mode = _build_prompt_relay(
+                tdata, global_p, float(_fps_val),
+                total_frames=total_frames, win_size=_win_size, win_overlap=_win_ovl,
+            )
+            if not has_segs:
+                raise ValueError("Timeline is empty — add segments before generating.")
 
-                # "How to Process each Line of the Text Prompt":
-                #   PW = Each Paragraph Separated by an Empty line → new Sliding
-                #        Window of the same Video Generation
-                #   FG = All the Lines are Part of the Same Prompt
-                settings["multi_prompts_gen_type"] = prompt_mode
+            parsed     = _tparsed_pre
+            segments   = parsed.get("segments", [])
+            audio_segs = parsed.get("audioSegments", [])
 
-                # Reference images + KFI
-                ref_images, img_segs_sorted = [], sorted(
-                    [s for s in segments if s.get("imageB64")],
-                    key=lambda s: s.get("start", 0)
-                )
-                for seg in img_segs_sorted:
-                    b64 = seg.get("imageB64", "")
-                    if "," in b64:
-                        b64 = b64.split(",", 1)[1]
-                    try:
-                        pil = _PILImage.open(_io.BytesIO(base64.b64decode(b64))).convert("RGB")
-                        ref_images.append(pil)
-                    except Exception as exc:
-                        log.warning("Image decode failed: %s", exc)
+            settings = self.get_current_model_settings(state)
+            settings["prompt"] = combined
+            settings["multi_prompts_gen_type"] = prompt_mode
 
-                if ref_images:
+            # The WanGP API queue requires model_type in the task params. The
+            # settings dict from get_current_model_settings doesn't always carry
+            # it, so set it explicitly from the active model (state, or the
+            # plugin's selected model, or the model_def of either).
+            _mt = self._state_model_type(state)
+            if not _mt:
+                _mt = getattr(self, "_selected_model_type", "") or ""
+            if _mt:
+                settings["model_type"] = _mt
+                try:
+                    if self._wangp_session is not None:
+                        _md = self._wangp_session.get_model_def(_mt) or {}
+                        if _md.get("architecture"):
+                            settings.setdefault("base_model_type", _md["architecture"])
+                except Exception:
+                    pass
+
+            # Reference images + KFI
+            ref_images, img_segs_sorted = [], sorted(
+                [s for s in segments if s.get("imageB64")],
+                key=lambda s: s.get("start", 0)
+            )
+            for seg in img_segs_sorted:
+                b64 = seg.get("imageB64", "")
+                if "," in b64:
+                    b64 = b64.split(",", 1)[1]
+                try:
+                    pil = _PILImage.open(_io.BytesIO(base64.b64decode(b64))).convert("RGB")
+                    ref_images.append(pil)
+                except Exception as exc:
+                    log.warning("Image decode failed: %s", exc)
+
+            if ref_images:
+                if as_paths:
+                    # The API queue serializes image_refs/image_start as FILE
+                    # PATHS, not PIL objects. Write each reference image to a
+                    # temp PNG and pass the paths.
+                    ref_paths = []
+                    for pil in ref_images:
+                        tmp = tempfile.NamedTemporaryFile(
+                            suffix=".png", delete=False, prefix="wdc_imgref_")
+                        pil.save(tmp.name, "PNG"); tmp.flush(); tmp.close()
+                        ref_paths.append(tmp.name)
+                    settings["image_refs"]  = ref_paths
+                    settings["image_start"] = [ref_paths[0]]
+                else:
                     settings["image_refs"]  = ref_images
                     settings["image_start"] = [ref_images[0]]
-                    settings["video_prompt_type"] = "KFI"
-                    positions = ["1"] + [str(int(s.get("start", 0))) for s in img_segs_sorted[1:]]
-                    settings["frames_positions"]       = " ".join(positions)
-                    # NOTE: multi_prompts_gen_type is already set above from the
-                    # sliding-window state ("PW"/"FG") — do not override it here.
-                else:
-                    for k in ("image_refs","image_start","video_prompt_type","frames_positions"):
-                        settings.pop(k, None)
+                settings["video_prompt_type"] = "KFI"
+                positions = ["1"] + [str(int(s.get("start", 0))) for s in img_segs_sorted[1:]]
+                settings["frames_positions"] = " ".join(positions)
+            else:
+                for k in ("image_refs","image_start","video_prompt_type","frames_positions"):
+                    settings.pop(k, None)
 
-                settings["video_length"] = total_frames
-                settings["force_fps"]    = str(_fps_val)
+            settings["video_length"] = total_frames
+            settings["force_fps"]    = str(_fps_val)
 
-                # Relay the timeline's sliding window settings so the Advanced →
-                # Sliding Window tab matches what the timeline shows.
+            if _win_size > 0:
+                settings["sliding_window_size"]    = _win_size
+                settings["sliding_window_overlap"] = _win_ovl
+
+            # ── Merge Advanced-clone overrides ─────────────────────────────
+            # Every key the Advanced clone manages is written straight into
+            # settings (these are real WanGP setting keys). sliding_window_* and
+            # force_fps are handled above/below from the timeline, so skip them
+            # here unless the user set a window size in Advanced.
+            if adv:
+                _skip = {"sliding_window_size", "sliding_window_overlap",
+                         "video_length", "force_fps",
+                         "loras_choices", "loras_multipliers", "lora_show_sliders"}
+                for k, vv in adv.items():
+                    if k in _skip or vv is None:
+                        continue
+                    settings[k] = vv
+                # If Advanced set a window size, honor the snapped pair set above.
                 if _win_size > 0:
                     settings["sliding_window_size"]    = _win_size
                     settings["sliding_window_overlap"] = _win_ovl
 
-                # Audio
-                audio_path = None
-                if audio_segs:
-                    try:
-                        mixed = _build_combined_audio(tdata, total_frames, float(fps or 24))
-                        if mixed is not None:
-                            import soundfile as _sf
-                            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, prefix="wdc_audio_")
-                            wf = mixed["waveform"].squeeze(0)
-                            _sf.write(tmp.name, wf.numpy().T, mixed["sample_rate"])
-                            audio_path = tmp.name
-                    except Exception:
-                        pass
-                    if audio_path is None:
-                        first_b64 = audio_segs[0].get("audioB64", "")
-                        if first_b64:
-                            if "," in first_b64:
-                                first_b64 = first_b64.split(",", 1)[1]
-                            tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, prefix="wdc_audio_")
-                            tmp.write(base64.b64decode(first_b64)); tmp.flush()
-                            audio_path = tmp.name
+            # ── LoRAs: activated list + multipliers string ─────────────────
+            if lora_sel:
+                settings["activated_loras"]   = list(lora_sel)
+                settings["loras_multipliers"] = str(lora_mult or "")
+            elif lora_mult is not None and str(lora_mult).strip():
+                settings["loras_multipliers"] = str(lora_mult)
 
-                if audio_path:
-                    settings["audio_guide"]       = audio_path
-                    settings["audio_prompt_type"] = "A"
-                else:
-                    settings.pop("audio_guide",       None)
-                    settings.pop("audio_prompt_type", None)
-
-                # Auto-save whenever we apply (zip with deduplicated assets)
+            # Audio
+            audio_path = None
+            if audio_segs:
                 try:
-                    from datetime import datetime as _dt
-                    payload = {
-                        "version": PLUGIN_VERSION,
-                        "project_name": (project_name or "").strip() or "ltx_project",
-                        "saved_at": _dt.now().strftime("%Y-%m-%d_%H-%M-%S"),
-                        "global_prompt": global_p,
-                        "fps": _fps_val,
-                        "duration_sec": float(duration_sec or 5),
-                        "epsilon": float(epsilon or 0.001),
-                        "timeline": parsed,
-                    }
-                    _write_session_zip(AUTOSAVE_ZIP, payload)
+                    mixed = _build_combined_audio(tdata, total_frames, float(fps or 24))
+                    if mixed is not None:
+                        import soundfile as _sf
+                        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, prefix="wdc_audio_")
+                        wf = mixed["waveform"].squeeze(0)
+                        _sf.write(tmp.name, wf.numpy().T, mixed["sample_rate"])
+                        audio_path = tmp.name
                 except Exception:
                     pass
+                if audio_path is None:
+                    first_b64 = audio_segs[0].get("audioB64", "")
+                    if first_b64:
+                        if "," in first_b64:
+                            first_b64 = first_b64.split(",", 1)[1]
+                        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, prefix="wdc_audio_")
+                        tmp.write(base64.b64decode(first_b64)); tmp.flush()
+                        audio_path = tmp.name
 
-                n_segs  = len(segments)
-                n_audio = len(audio_segs)
-                n_imgs  = len(ref_images)
-                parts   = [f"**{n_segs} segment(s)**"]
-                if n_imgs:
-                    parts.append(f"**{n_imgs} image(s)** @ [{settings.get('frames_positions','')}] KFI")
-                if n_audio:
-                    parts.append(f"**{n_audio} audio clip(s)**")
-                if prompt_mode == "PW":
-                    n_win = len(_compute_windows(total_frames, _win_size, _win_ovl))
-                    parts.append(f"**{n_win} sliding windows** ({_win_size}f / ovl {_win_ovl}f, prompt mode PW)")
-                else:
-                    parts.append("**single window** (prompt mode FG)")
+            if audio_path:
+                settings["audio_guide"]       = audio_path
+                settings["audio_prompt_type"] = "A"
+            else:
+                settings.pop("audio_guide",       None)
+                settings.pop("audio_prompt_type", None)
 
-                msg = f"✅ Applied — {', '.join(parts)}.  \nSwitch to **Video Generator** and click Generate."
+            # Auto-save (zip with deduplicated assets)
+            try:
+                from datetime import datetime as _dt
+                payload = {
+                    "version": PLUGIN_VERSION,
+                    "project_name": (project_name or "").strip() or "ltx_project",
+                    "saved_at": _dt.now().strftime("%Y-%m-%d_%H-%M-%S"),
+                    "global_prompt": global_p,
+                    "fps": _fps_val,
+                    "duration_sec": float(duration_sec or 5),
+                    "epsilon": float(epsilon or 0.001),
+                    "timeline": parsed,
+                }
+                _write_session_zip(AUTOSAVE_ZIP, payload)
+            except Exception:
+                pass
+
+            # Human-readable summary
+            n_segs, n_audio, n_imgs = len(segments), len(audio_segs), len(ref_images)
+            parts = [f"**{n_segs} segment(s)**"]
+            if n_imgs:
+                parts.append(f"**{n_imgs} image(s)** @ [{settings.get('frames_positions','')}] KFI")
+            if n_audio:
+                parts.append(f"**{n_audio} audio clip(s)**")
+            if prompt_mode == "PW":
+                n_win = len(_compute_windows(total_frames, _win_size, _win_ovl))
+                parts.append(f"**{n_win} sliding windows** ({_win_size}f / ovl {_win_ovl}f, mode PW)")
+            else:
+                parts.append("**single window** (mode FG)")
+
+            return settings, parts, {
+                "total_frames": total_frames, "fps": _fps_val,
+            }
+
+        def apply_to_generator(tdata, global_p, fps, duration_sec, epsilon, project_name, state):
+            import time as _time
+            try:
+                settings, parts, _ = _assemble_settings(
+                    tdata, global_p, fps, duration_sec, epsilon, project_name, state
+                )
+                msg = (f"✅ Applied — {', '.join(parts)}.  \n"
+                       f"Switch to **Video Generator** and click Generate.")
                 gr.Info("LTX Director → Generator: settings transferred.")
                 return msg, gr.update(value=str(_time.time()))
-
+            except ValueError as ve:
+                return f"⚠️ {ve}", gr.update()
             except Exception as e:
                 log.error("Apply error: %s", traceback.format_exc())
                 return f"❌ Error: {e}", gr.update()
 
         def apply_and_generate(tdata, global_p, fps, duration_sec, epsilon, project_name, state):
             msg, refresh = apply_to_generator(tdata, global_p, fps, duration_sec, epsilon, project_name, state)
-            # The JS bridge will click the Generate button after this returns
+            # The JS bridge clicks the Generate button after this returns.
             return msg, refresh
+
+        def generate_here(tdata, global_p, fps, duration_sec, epsilon, project_name,
+                          state, *adv_vals):
+            """Direct generation via the WanGP plugin API. Because this handler
+            references self.api, plugin_ui_context() auto-wraps the click to
+            queue the job into the live WebUI queue. We yield status + the
+            finished video into the inline player. Outputs:
+            (gen_status_md, result_video, status_md).
+
+            adv_vals = (*adv_components, loras_choices, loras_multipliers).
+            """
+            # Peel the two LoRA fields off the end (bound after *adv_components).
+            lora_sel, lora_mult = None, None
+            adv_core = adv_vals
+            if len(adv_vals) >= 2:
+                lora_sel = adv_vals[-2]
+                lora_mult = adv_vals[-1]
+                adv_core = adv_vals[:-2]
+
+            if not self.has_gen_api or self._wangp_session is None:
+                yield (
+                    gr.update(value="⚠️ This WanGP build has no plugin generation "
+                                    "API — use **Apply to Generator** instead.",
+                              visible=True),
+                    gr.update(visible=False),
+                    gr.update(),
+                )
+                return
+
+            try:
+                settings, parts, info = _assemble_settings(
+                    tdata, global_p, fps, duration_sec, epsilon, project_name,
+                    state, adv_vals=adv_core, lora_sel=lora_sel, lora_mult=lora_mult,
+                    as_paths=True,
+                )
+            except ValueError as ve:
+                yield (gr.update(value=f"⚠️ {ve}", visible=True),
+                       gr.update(visible=False), gr.update())
+                return
+            except Exception as e:
+                log.error("Generate-here assemble error: %s", traceback.format_exc())
+                yield (gr.update(value=f"❌ Error preparing settings: {e}", visible=True),
+                       gr.update(visible=False), gr.update())
+                return
+
+            yield (
+                gr.update(value=f"🎬 Queued — {', '.join(parts)}.", visible=True),
+                gr.update(visible=False),
+                gr.update(value="🎬 Submitting to WanGP…"),
+            )
+
+            # Submit the task and get the job handle. CRITICAL: we do NOT chain
+            # .result() here — that would block this generator before the plugin
+            # wrapper can pump the WebUI queue (the job would be admitted but
+            # never run). Instead we submit, then poll job.done, draining the
+            # job's event stream for progress, exactly like WanGP's own video
+            # process plugin. The wrapper pumps the queue while we poll.
+            import time as _t
+            try:
+                job = self._wangp_session.submit_task(settings)
+            except Exception as e:
+                log.error("Generate-here submit error: %s", traceback.format_exc())
+                yield (gr.update(value=f"❌ Could not submit: {e}", visible=True),
+                       gr.update(visible=False),
+                       gr.update(value="❌ Submit failed."))
+                return
+
+            last_status = ""
+            cur_step = tot_step = None
+            while not getattr(job, "done", False):
+                # Drain any progress events without blocking.
+                try:
+                    stream = getattr(job, "events", None)
+                    if stream is not None:
+                        ev = stream.get(timeout=0.25)
+                        if ev is not None:
+                            data = getattr(ev, "data", None)
+                            if data is not None:
+                                st = getattr(data, "status", None) or getattr(data, "phase", None)
+                                cs = getattr(data, "current_step", None)
+                                ts = getattr(data, "total_steps", None)
+                                pr = getattr(data, "progress", None)
+                                if cs is not None: cur_step = cs
+                                if ts is not None: tot_step = ts
+                                if st: last_status = str(st)
+                    else:
+                        _t.sleep(0.25)
+                except Exception:
+                    _t.sleep(0.25)
+
+                if cur_step is not None and tot_step:
+                    bar = self._progress_bar(cur_step, tot_step)
+                    status_line = f"🎬 {last_status or 'Generating'} — step {cur_step}/{tot_step}\n\n{bar}"
+                else:
+                    status_line = f"🎬 {last_status or 'Generating'}…"
+                yield (gr.update(value=status_line, visible=True),
+                       gr.update(visible=False),
+                       gr.update(value=status_line))
+
+            # Job finished — fetch the result (already done, returns immediately).
+            try:
+                result = job.result(timeout=1.0)
+            except Exception as e:
+                log.error("Generate-here result error: %s", traceback.format_exc())
+                yield (gr.update(value=f"❌ Generation error: {e}", visible=True),
+                       gr.update(visible=False),
+                       gr.update(value="❌ Generation error."))
+                return
+
+            # Resolve an output file path from the result.
+            video_path = None
+            try:
+                if getattr(result, "artifacts", None):
+                    for art in result.artifacts:
+                        if getattr(art, "path", None):
+                            video_path = art.path
+                            break
+                if video_path is None and getattr(result, "generated_files", None):
+                    video_path = result.generated_files[-1]
+            except Exception:
+                pass
+
+            if getattr(result, "cancelled", False):
+                yield (gr.update(value="⏹ Generation cancelled.", visible=True),
+                       gr.update(visible=False),
+                       gr.update(value="⏹ Cancelled."))
+                return
+
+            if not getattr(result, "success", False) or not video_path:
+                errs = "; ".join(str(e) for e in getattr(result, "errors", []) or [])
+                yield (gr.update(value=f"❌ No output produced. {errs}".strip(), visible=True),
+                       gr.update(visible=False),
+                       gr.update(value="❌ No output produced."))
+                return
+
+            yield (
+                gr.update(value=f"✅ Done — {', '.join(parts)}.", visible=True),
+                gr.update(value=video_path, visible=True),
+                gr.update(value="✅ Generation complete."),
+            )
+
+        def cancel_here():
+            try:
+                if self._wangp_session is not None:
+                    self._wangp_session.cancel()
+                return gr.update(value="⏹ Stopping…", visible=True)
+            except Exception as e:
+                return gr.update(value=f"⚠️ Could not cancel: {e}", visible=True)
 
         def clear_timeline():
             return "{}", "", "", "", gr.update(visible=False), "🗑 Timeline cleared."
+
+        def _clean_choices(ch):
+            """Coerce a choices list into the (label, value) 2-tuple form Gradio
+            requires. Returns None if there's nothing usable. Guards against the
+            upsampler API returning richer tuples that would crash a dropdown
+            update and freeze the client."""
+            if not ch:
+                return None
+            out = []
+            for item in ch:
+                try:
+                    if isinstance(item, (list, tuple)):
+                        if len(item) >= 2:
+                            out.append((str(item[0]), item[1]))
+                        elif len(item) == 1:
+                            out.append((str(item[0]), item[0]))
+                    else:
+                        out.append((str(item), item))
+                except Exception:
+                    continue
+            return out or None
+
+        def refresh_advanced_from_model(state):
+            """Populate the Advanced widgets from the current model's live
+            settings, and set per-field visibility to match the model. Returns
+            updates in adv_keys order, then tab updates, then a lora update and
+            a status line. Wrapped so it can NEVER raise into the event chain
+            (a raising handler here freezes the whole Gradio client)."""
+            _noop = (*[gr.update() for _ in adv_keys],
+                     *[gr.update() for _ in adv_tab_keys],
+                     gr.update())
+            try:
+                try:
+                    s = self.get_current_model_settings(state) or {}
+                except Exception as e:
+                    return (*_noop, f"⚠️ Could not read model settings: {e}")
+
+                mt = self._state_model_type(state) or getattr(self, "_selected_model_type", "")
+                model_def = {}
+                try:
+                    if mt and self._wangp_session is not None:
+                        model_def = self._wangp_session.get_model_def(mt) or {}
+                except Exception:
+                    model_def = {}
+
+                # If we couldn't resolve the model, DON'T change visibility —
+                # hiding tabs (e.g. Quality) on an empty model_def is what made
+                # tabs disappear. Only retarget visibility when we know the model.
+                have_model = bool(model_def)
+                vis  = _adv.resolve_visibility(model_def) if have_model else {}
+                tvis = _adv.tab_visibility(vis) if have_model else {}
+
+                _sp_methods, _sp_ratios = (None, None)
+                try:
+                    _sp_methods, _sp_ratios = self._spatial_choices_for_model(mt)
+                    _sp_methods = _clean_choices(_sp_methods)
+                    _sp_ratios  = _clean_choices(_sp_ratios)
+                except Exception:
+                    _sp_methods, _sp_ratios = None, None
+
+                def val(key):
+                    v = s.get(key, None)
+                    extra = {}
+                    if key == "spatial_upsampling_method" and _sp_methods:
+                        extra["choices"] = _sp_methods
+                    elif key == "spatial_upsampling_ratio" and _sp_ratios:
+                        extra["choices"] = _sp_ratios
+                    if have_model:
+                        extra["visible"] = vis.get(key, True)
+                    if v is None:
+                        return gr.update(**extra)
+                    return gr.update(value=v, **extra)
+
+                field_updates = [val(k) for k in adv_keys]
+                if have_model:
+                    tab_updates = [gr.update(visible=tvis.get(k, True)) for k in adv_tab_keys]
+                else:
+                    tab_updates = [gr.update() for _ in adv_tab_keys]
+
+                try:
+                    loras = self._list_loras_for_model(mt)
+                    lora_update = _lora_update(loras)
+                except Exception:
+                    lora_update = gr.update()
+
+                msg = ("⟲ Advanced synced to the selected model."
+                       if have_model else
+                       "⟲ Synced. (Select a model above to retarget which fields show.)")
+                return (*field_updates, *tab_updates, lora_update, msg)
+            except Exception as e:
+                log.warning("refresh_advanced_from_model failed safely: %s", e)
+                return (*_noop, f"⚠️ Sync skipped: {e}")
+
+        def switch_model(model_type, state):
+            """Switch the live WanGP model via model_choice_target, then resync
+            the Advanced clone to the newly selected model. Wrapped so it can
+            never raise into the event chain."""
+            _noop_tail = (*[gr.update() for _ in adv_keys],
+                          *[gr.update() for _ in adv_tab_keys], gr.update())
+            if not model_type:
+                return (gr.update(), "⚠️ No model selected.", *_noop_tail)
+            try:
+                import time as _t
+                target_val = f"{model_type}|{_t.time()}"
+                self._selected_model_type = model_type
+
+                model_def = {}
+                try:
+                    if self._wangp_session is not None:
+                        model_def = self._wangp_session.get_model_def(model_type) or {}
+                except Exception:
+                    model_def = {}
+                have_model = bool(model_def)
+                vis  = _adv.resolve_visibility(model_def) if have_model else {}
+                tvis = _adv.tab_visibility(vis) if have_model else {}
+
+                _sp_methods, _sp_ratios = (None, None)
+                try:
+                    _sp_methods, _sp_ratios = self._spatial_choices_for_model(model_type)
+                    _sp_methods = _clean_choices(_sp_methods)
+                    _sp_ratios  = _clean_choices(_sp_ratios)
+                except Exception:
+                    _sp_methods, _sp_ratios = None, None
+
+                defaults = {}
+                try:
+                    if self._wangp_session is not None:
+                        defaults = self._wangp_session.get_default_settings(model_type) or {}
+                except Exception:
+                    defaults = {}
+
+                def val(key):
+                    v = defaults.get(key, None)
+                    extra = {}
+                    if key == "spatial_upsampling_method" and _sp_methods:
+                        extra["choices"] = _sp_methods
+                    elif key == "spatial_upsampling_ratio" and _sp_ratios:
+                        extra["choices"] = _sp_ratios
+                    if have_model:
+                        extra["visible"] = vis.get(key, True)
+                    if v is None:
+                        return gr.update(**extra)
+                    return gr.update(value=v, **extra)
+
+                field_updates = [val(k) for k in adv_keys]
+                if have_model:
+                    tab_updates = [gr.update(visible=tvis.get(k, True)) for k in adv_tab_keys]
+                else:
+                    tab_updates = [gr.update() for _ in adv_tab_keys]
+
+                try:
+                    loras = self._list_loras_for_model(model_type)
+                    lora_update = _lora_update(loras, reset=True)
+                except Exception:
+                    lora_update = gr.update()
+
+                name = next((m["label"] for m in _ltx_models
+                             if m["model_type"] == model_type), model_type)
+                return (target_val, f"✅ Switched to **{name}**.",
+                        *field_updates, *tab_updates, lora_update)
+            except Exception as e:
+                log.warning("switch_model failed safely: %s", e)
+                return (gr.update(), f"⚠️ Switch skipped: {e}", *_noop_tail)
+
+        def refresh_model_list():
+            models = self._list_ltx_models()
+            choices = [(m["label"], m["model_type"]) for m in models]
+            val = choices[0][1] if choices else None
+            return gr.update(choices=choices, value=val), f"⟲ Found {len(choices)} LTX model(s)."
+
+        # ── Direct generation (only meaningful when the API is present) ────
+        if self.has_gen_api:
+            # generate_here yields a 3rd status value; we route it to a hidden
+            # sink so the progress only shows in the top status (gen_status_md),
+            # above the model selector — not duplicated in the bottom status.
+            _gen_status_sink = gr.Markdown(visible=False, elem_id="wdc-gen-status-sink")
+            generate_here_btn_h.click(
+                fn=generate_here,
+                inputs=[timeline_data_box, global_prompt_box, fps_box, duration_box,
+                        epsilon_box, project_name_box, self.state, *adv_components,
+                        adv_map["loras_choices"], adv_map["loras_multipliers"]],
+                outputs=[gen_status_md, result_video, _gen_status_sink],
+            )
+            cancel_here_btn.click(fn=cancel_here, inputs=[], outputs=[gen_status_md])
+
+            # Model selector → switch live model + retarget Advanced visibility
+            model_selector.change(
+                fn=switch_model,
+                inputs=[model_selector, self.state],
+                outputs=[self.model_choice_target, model_status,
+                         *adv_components, *adv_tab_comps, loras_component],
+            )
+            refresh_models_btn.click(
+                fn=refresh_model_list, inputs=[],
+                outputs=[model_selector, model_status],
+            )
+
+        refresh_adv_btn.click(
+            fn=refresh_advanced_from_model,
+            inputs=[self.state],
+            outputs=[*adv_components, *adv_tab_comps, loras_component, adv_status],
+        )
+
+        # ── Category ↔ Resolution Budget (mirrors the Video Generator) ─────
+        _res_group = adv_map.get("resolution_group")
+        _res_comp  = adv_map.get("resolution")
+        if _res_group is not None and _res_comp is not None:
+            # Populate both at build time for the initial model.
+            try:
+                groups, group_res, sel_group, sel_val = \
+                    self._resolution_choices_for_model(_model_value)
+                if groups:
+                    _res_group.choices = groups
+                    _res_group.value = sel_group
+                if group_res:
+                    _res_comp.choices = group_res
+                    if sel_val:
+                        _res_comp.value = sel_val
+            except Exception as exc:
+                log.info("Initial resolution population skipped: %s", exc)
+
+            def _on_category_change(selected_group, state):
+                """Filter the Resolution Budget list to the chosen Category."""
+                try:
+                    import wgp as _wgp
+                except Exception:
+                    return gr.update()
+                try:
+                    mt = self._state_model_type(state) or self._selected_model_type
+                    model_def = (self._wangp_session.get_model_def(mt) or {}) \
+                        if (self._wangp_session is not None and mt) else {}
+                    model_resolutions = model_def.get("resolutions", None)
+                    choices, _ = _wgp.get_resolution_choices(None, model_resolutions)
+                    if model_resolutions is None:
+                        filtered = [r for r in choices
+                                    if _wgp.categorize_resolution(r[1]) == selected_group]
+                    else:
+                        filtered = model_resolutions
+                    val = filtered[0][1] if filtered else None
+                    return gr.update(choices=filtered, value=val)
+                except Exception as exc:
+                    log.info("Category change skipped: %s", exc)
+                    return gr.update()
+
+            _res_group.change(
+                fn=_on_category_change,
+                inputs=[_res_group, self.state],
+                outputs=[_res_comp], show_progress="hidden",
+            )
+
+        # ── LoRA strength sliders (fixed pool, queue-safe) ─────────────────
+        _mult_comp   = adv_map.get("loras_multipliers")
+        _phases_comp = adv_map.get("guidance_phases")
+        _show_comp   = adv_map.get("lora_show_sliders")
+        _pool        = adv_map.get("_lora_sliders", [])
+        _rows        = adv_map.get("_lora_slider_rows", [])
+        _labels      = adv_map.get("_lora_slider_labels", [])
+        _col         = adv_map.get("_lora_sliders_col")
+        _max_rows    = adv_map.get("_lora_max_rows", 0)
+        _max_phases  = adv_map.get("_lora_max_phases", 0)
+
+        # Targets the layout handler updates: column, all rows, all labels, all
+        # pool sliders (matches layout_lora_sliders' return order).
+        _layout_outputs = [_col, *_rows, *_labels, *_pool] if _col is not None else []
+
+        def _layout_sliders(selected, phases, show, current):
+            return _adv.layout_lora_sliders(
+                selected, phases, show, current, _max_rows, _max_phases)
+
+        # Re-layout the pool whenever the selection, phase count, or toggle
+        # changes. All registered statically at build time (no @gr.render).
+        if _col is not None and loras_component is not None and _phases_comp is not None:
+            _layout_inputs = [loras_component, _phases_comp, _show_comp, _mult_comp]
+
+            def _collect_mult(selected, phases, *vals):
+                return _adv.collect_lora_multipliers(selected, phases, _max_phases, *vals)
+            _collect_inputs = [loras_component, _phases_comp, *_pool]
+
+            # Selection / phase / toggle change → re-layout the pool, THEN
+            # rebuild the multipliers string from the freshly-set slider values.
+            for _trigger in (loras_component, _phases_comp, _show_comp):
+                _trigger.change(
+                    fn=_layout_sliders, inputs=_layout_inputs,
+                    outputs=_layout_outputs, show_progress="hidden",
+                ).then(
+                    fn=_collect_mult, inputs=_collect_inputs,
+                    outputs=[_mult_comp], show_progress="hidden",
+                )
+
+            # Moving any slider updates the multipliers string immediately.
+            for _s in _pool:
+                _s.change(fn=_collect_mult, inputs=_collect_inputs,
+                          outputs=[_mult_comp], show_progress="hidden")
+
+        # Persist the "show strength sliders" toggle so it's remembered next run.
+        _lora_show_cb = adv_map.get("lora_show_sliders")
+        if _lora_show_cb is not None:
+            def _persist_lora_sliders(show):
+                try:
+                    _save_config({**_load_config(), "lora_show_sliders": bool(show)})
+                except Exception as exc:
+                    log.warning("Could not persist lora_show_sliders: %s", exc)
+                return gr.update()
+            _lora_show_cb.change(
+                fn=_persist_lora_sliders, inputs=[_lora_show_cb], outputs=[adv_status],
+            )
+
+        # Advanced is populated at build time (loras + spatial choices) and via
+        # the explicit "⟲ Sync values from current model" button. We do NOT
+        # auto-sync on main_tabs.select: that handler fires on every tab change
+        # app-wide and runs heavy API calls, which could error during a restore
+        # and freeze every clickable element until a page refresh.
 
         preview_btn.click(
             fn=preview_schedule,
@@ -1315,6 +2159,145 @@ class LTXDirectorPlugin(WAN2GPPlugin):
 
         schedule_md.render() if False else None   # keep reference
         return [schedule_md, status_md]
+
+    # ── Model helpers ───────────────────────────────────────────────────────
+
+    # LTX families to surface in the model dropdown (LTX-Video + LTX-2).
+    _LTX_FAMILIES = ["ltxv", "ltx2", "LTX Video", "LTX-2"]
+
+    def _list_ltx_models(self) -> list:
+        """Return [{model_type, label, family}] for every LTX model the running
+        WanGP exposes (LTX-Video and LTX-2 families, including finetunes).
+        Falls back to a static list if the API isn't available."""
+        out = []
+        try:
+            if self._wangp_session is not None:
+                defs = self._wangp_session.list_model_defs(family=self._LTX_FAMILIES) or []
+                for d in defs:
+                    mt = str(d.get("model_type", "")).strip()
+                    if not mt:
+                        continue
+                    name = d.get("name") or mt
+                    arch = d.get("architecture", "")
+                    fam = "LTX-2" if str(arch).startswith("ltx2") or "ltx2" in mt else "LTX Video"
+                    out.append({"model_type": mt, "label": f"{name}  ·  {fam}", "family": fam})
+        except Exception as exc:
+            log.warning("Could not list LTX models from API: %s", exc)
+
+        if not out:
+            # Static fallback covering the known LTX base types.
+            for mt, name, fam in [
+                ("ltxv_13B", "LTX Video 0.9.8 13B", "LTX Video"),
+                ("ltx2_19B", "LTX-2 19B", "LTX-2"),
+                ("ltx2_22B", "LTX-2 22B (2.3)", "LTX-2"),
+                ("ltx2_22B_edit_anything", "LTX-2 22B Edit Anything", "LTX-2"),
+                ("joyai_echo", "JoyAI Echo (LTX-2)", "LTX-2"),
+            ]:
+                out.append({"model_type": mt, "label": f"{name}  ·  {fam}", "family": fam})
+        return out
+
+    def _state_model_type(self, state) -> str:
+        """Best-effort read of the currently active model_type from state."""
+        try:
+            if isinstance(state, dict):
+                return str(state.get("model_type", "") or "")
+            mt = getattr(state, "get", None)
+            if callable(mt):
+                return str(state.get("model_type", "") or "")
+        except Exception:
+            pass
+        return ""
+
+    def _resolution_choices_for_model(self, model_type: str):
+        """Return (groups, group_resolutions, selected_group, selected_value)
+        for the Category + Resolution Budget dropdowns, using WanGP's own
+        resolution helpers. Returns (None,...) if unavailable."""
+        try:
+            import wgp as _wgp
+        except Exception:
+            try:
+                import importlib
+                _wgp = importlib.import_module("wgp")
+            except Exception:
+                return None, None, None, None
+        try:
+            model_def = {}
+            if self._wangp_session is not None and model_type:
+                model_def = self._wangp_session.get_model_def(model_type) or {}
+            model_resolutions = model_def.get("resolutions", None)
+            cur = None
+            try:
+                s = self.get_current_model_settings(self.state) if hasattr(self, "state") else {}
+            except Exception:
+                s = {}
+            cur = (s or {}).get("resolution") if isinstance(s, dict) else None
+            choices, cur = _wgp.get_resolution_choices(cur, model_resolutions)
+            groups, group_res, sel_group = _wgp.group_resolutions(model_def, choices, cur)
+            return groups, group_res, sel_group, cur
+        except Exception as exc:
+            log.info("Resolution choices unavailable: %s", exc)
+            return None, None, None, None
+
+    def _progress_bar(self, cur, tot, width: int = 24) -> str:
+        """Render a simple text progress bar for the status line."""
+        try:
+            frac = max(0.0, min(1.0, float(cur) / float(tot))) if tot else 0.0
+        except Exception:
+            frac = 0.0
+        filled = int(round(frac * width))
+        return f"`{'█' * filled}{'░' * (width - filled)}` {int(frac * 100)}%"
+
+    def _spatial_choices_for_model(self, model_type: str):
+        """Return (method_choices, ratio_choices) for the Post Processing
+        Spatial Upsampling dropdowns, pulled live from WanGP's upsampler API so
+        all real options (incl. model VAE upsamplers) are available. Returns
+        (None, None) if the API can't be reached."""
+        try:
+            from postprocessing import upsamplers as _ups
+        except Exception:
+            return None, None
+        try:
+            model_def = {}
+            if self._wangp_session is not None and model_type:
+                model_def = self._wangp_session.get_model_def(model_type) or {}
+            try:
+                vae_choices = _ups.query_model_vae_method_choices(model_type, model_def, 0)
+            except Exception:
+                vae_choices = []
+            state = _ups.dropdown_state("", image_outputs=False, vae_choices=vae_choices)
+            def _san(ch):
+                if not ch:
+                    return None
+                out = []
+                for it in ch:
+                    if isinstance(it, (list, tuple)) and len(it) >= 2:
+                        out.append((str(it[0]), it[1]))
+                return out or None
+            return _san(state.get("method_choices")), _san(state.get("ratio_choices"))
+        except Exception as exc:
+            log.info("Spatial upsampling choices unavailable: %s", exc)
+            return None, None
+
+    def _list_loras_for_model(self, model_type: str) -> list:
+        """Return available LoRA filenames for a model by listing its LoRA
+        directory (via the get_lora_dir global). Empty list if unavailable."""
+        names = []
+        try:
+            get_dir = getattr(self, "get_lora_dir", None)
+            if get_dir is None or not model_type:
+                return []
+            lora_dir = get_dir(model_type)
+            if not lora_dir or not os.path.isdir(lora_dir):
+                return []
+            for root, _dirs, files in os.walk(lora_dir):
+                for f in files:
+                    if f.lower().endswith((".safetensors", ".pt", ".ckpt")):
+                        rel = os.path.relpath(os.path.join(root, f), lora_dir)
+                        names.append(rel)
+            names.sort()
+        except Exception as exc:
+            log.warning("Could not list LoRAs for %s: %s", model_type, exc)
+        return names
 
     # ── Header (branding) ──────────────────────────────────────────────────
 
@@ -1364,6 +2347,38 @@ class LTXDirectorPlugin(WAN2GPPlugin):
 // ── LTX Director bridge v1.1.0 ──────────────────────────────────────────
 (function() {
   console.log("[LTXDirector] Bridge v1.1 loaded");
+
+  // Inject scoped styles so the Load drop-zone and other plugin widgets use
+  // WanGP's native bordered / lighter-surface look instead of rendering
+  // dark-on-dark (the drop box was invisible against the page background).
+  function wdcInjectStyles() {
+    if (document.getElementById("wdc-style")) return;
+    var css = document.createElement("style");
+    css.id = "wdc-style";
+    css.textContent = [
+      /* Load Session drop-zone: visible border + surface that adapts to theme */
+      "#wdc-load-file { border: 1px dashed var(--border-color-primary, #555) !important;",
+      "  background: var(--background-fill-secondary, #2b2b2b) !important;",
+      "  border-radius: 8px !important; transition: border-color .15s, background .15s; }",
+      "#wdc-load-file:hover { border-color: var(--color-accent, #3a9a54) !important;",
+      "  background: var(--background-fill-primary, #333) !important; }",
+      "#wdc-load-file .wrap, #wdc-load-file .file-preview { color: var(--body-text-color, #ddd) !important; }",
+      /* Make the dashed upload area itself obvious */
+      "#wdc-load-file [data-testid='block-label'], #wdc-load-file label { color: var(--body-text-color, #ddd) !important; }",
+      /* Model row + advanced tabs sit cleanly within the page */
+      "#wdc-model-selector { min-width: 280px; }",
+      "#wdc-adv-tabs { border: 1px solid var(--border-color-primary, #444); border-radius: 8px; padding: 4px; }",
+      "#wdc-primary-actions { gap: 8px; }",
+      /* Bottom-align Save/Load action buttons with their taller inputs */
+      "#wdc-save-row, #wdc-load-row, #wdc-loadpath-row { align-items: flex-end !important; }",
+      "#wdc-save-row button, #wdc-load-row button, #wdc-loadpath-row button { margin-bottom: 0 !important; }",
+      "#wdc-clear-row { justify-content: flex-start; margin: 4px 0; }"
+    ].join("\n");
+    (document.head || document.documentElement).appendChild(css);
+  }
+  wdcInjectStyles();
+  setTimeout(wdcInjectStyles, 1500);
+  setTimeout(wdcInjectStyles, 5000);
 
   // Duplicate-install guard: if BOTH the old (wan2gp-whatdreamscost) and the
   // renamed (Wan2GP - LTX Director) plugin folders are installed, every
@@ -1500,7 +2515,22 @@ class LTXDirectorPlugin(WAN2GPPlugin):
       }, true);
     }
 
-    // Apply + Generate: apply then switch tab and click Generate
+    // Generate Here: pull fresh timeline state, then fire the direct-gen
+    // trigger. No tab switch / no button hunting — the WanGP plugin API queues
+    // the job and streams the result into the inline player on this tab.
+    const genHereBtn = root.querySelector("#wdc-generate-here-btn button") || root.querySelector("#wdc-generate-here-btn");
+    if (genHereBtn && !genHereBtn._wdcBound) {
+      genHereBtn._wdcBound = true;
+      genHereBtn.addEventListener("click", function(e) {
+        e.stopImmediatePropagation();
+        wdcSendToIframe("get_state");
+        setTimeout(function() { wdcClickTrigger("wdc-generate-here-trigger"); }, 300);
+      }, true);
+    }
+
+    // Legacy Apply + Generate (older builds without the plugin gen API): if the
+    // hidden generate trigger button is present and a visible legacy button
+    // exists, keep the old JS relay working as a fallback.
     const genBtn = root.querySelector("#wdc-generate-btn button") || root.querySelector("#wdc-generate-btn");
     if (genBtn && !genBtn._wdcBound) {
       genBtn._wdcBound = true;
@@ -1509,7 +2539,6 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         wdcSendToIframe("get_state");
         setTimeout(function() {
           wdcClickTrigger("wdc-generate-trigger");
-          // Wait for Python to finish applying, then trigger generation
           setTimeout(wdcSwitchToGenerateAndRun, 1200);
         }, 250);
       }, true);
