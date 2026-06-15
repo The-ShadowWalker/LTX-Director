@@ -1,6 +1,26 @@
 """
-LTX Director — Wan2GP Plugin  (v1.2.9)
+LTX Director — Wan2GP Plugin  (v1.3.2)
 ==============================
+Changes in v1.3.2:
+  - The Generate Here result video player is now a fixed, modest size
+    (max 480x360, aspect preserved) instead of expanding to the full video
+    size. Use the player's own fullscreen button for a larger view.
+Changes in v1.3.1:
+  - Category + Resolution Budget now clone the Video Generator exactly. The
+    first box lists the pixel-budget categories (256p, 320p, 384p, 480p, 540p,
+    720p, 1080p, and 1440p/2160p when 4K is enabled), and the second box lists
+    the matching width×height options for whichever category is selected —
+    switching the category repopulates the resolution list. The full resolution
+    table and the pixel-count categorisation are cloned from WanGP, with the
+    live wgp module preferred when available (and model-locked resolutions
+    honoured as a single "Locked" group).
+Changes in v1.3.0:
+  - Resolution controls moved OUT of Advanced → Misc and placed right under the
+    model selector, like the Video Generator: a "Category" dropdown and the
+    "Resolution Budget (Pixels will be reallocated to preserve Inputs W/H
+    ratio)" dropdown sit side by side. Category filters the resolution list,
+    both populate from the selected model and refresh when you switch models,
+    and the chosen resolution still flows into generation.
 Changes in v1.2.9:
   - Generate Here progress now shows in ONE place only — the status area above
     the model selector. The duplicate progress readout at the bottom of the tab
@@ -322,7 +342,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.2.9"
+PLUGIN_VERSION = "1.3.2"
 
 PLUGIN_DIR       = Path(__file__).parent
 MH_LOGO_PATH     = PLUGIN_DIR / "assets" / "mh_logo.jpg"
@@ -1036,6 +1056,27 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 elem_id="wdc-model-note",
             )
 
+        # Resolution controls, right under the model selector (like the Video
+        # Generator). Category filters the Resolution Budget list. These are the
+        # canonical resolution components; build_advanced_ui is told NOT to make
+        # its own so there's a single source of truth that the sync writes to.
+        _res_groups, _res_group_res, _res_sel_group, _res_sel_val = (
+            self._resolution_choices_for_model(_model_value)
+            if _model_value else (None, None, None, None))
+        with gr.Row(elem_id="wdc-resolution-row"):
+            resolution_group = gr.Dropdown(
+                choices=(_res_groups or []), value=_res_sel_group, scale=2,
+                label="Category", allow_custom_value=True,
+                elem_id="wdc-res-group")
+            resolution = gr.Dropdown(
+                choices=(_res_group_res or
+                         ["832x480", "1280x720", "1024x576", "768x512", "512x512",
+                          "720x1280", "480x832"]),
+                value=(_res_sel_val or "832x480"), scale=5,
+                allow_custom_value=True,
+                label="Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)",
+                elem_id="wdc-resolution")
+
         with gr.Accordion("⚙ Advanced generation settings", open=False, elem_id="wdc-advanced"):
             _initial_loras = self._list_loras_for_model(_model_value) if _model_value else []
             _init_sp_methods, _init_sp_ratios = (
@@ -1044,7 +1085,9 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 show_lora_sliders=bool(_cfg.get("lora_show_sliders", True)),
                 initial_loras=_initial_loras,
                 initial_spatial_methods=_init_sp_methods,
-                initial_spatial_ratios=_init_sp_ratios)
+                initial_spatial_ratios=_init_sp_ratios,
+                external_resolution=resolution,
+                external_resolution_group=resolution_group)
             with gr.Row():
                 refresh_adv_btn = gr.Button(
                     "⟲ Sync values from current model", variant="secondary",
@@ -2013,6 +2056,11 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 inputs=[model_selector, self.state],
                 outputs=[self.model_choice_target, model_status,
                          *adv_components, *adv_tab_comps, loras_component],
+            ).then(
+                fn=self._refresh_resolution_updates,
+                inputs=[model_selector],
+                outputs=[adv_map.get("resolution_group"), adv_map.get("resolution")],
+                show_progress="hidden",
             )
             refresh_models_btn.click(
                 fn=refresh_model_list, inputs=[],
@@ -2025,41 +2073,39 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             outputs=[*adv_components, *adv_tab_comps, loras_component, adv_status],
         )
 
-        # ── Category ↔ Resolution Budget (mirrors the Video Generator) ─────
+        # ── Category ↔ Resolution Budget (built up by the model selector) ──
         _res_group = adv_map.get("resolution_group")
         _res_comp  = adv_map.get("resolution")
         if _res_group is not None and _res_comp is not None:
-            # Populate both at build time for the initial model.
-            try:
-                groups, group_res, sel_group, sel_val = \
-                    self._resolution_choices_for_model(_model_value)
-                if groups:
-                    _res_group.choices = groups
-                    _res_group.value = sel_group
-                if group_res:
-                    _res_comp.choices = group_res
-                    if sel_val:
-                        _res_comp.value = sel_val
-            except Exception as exc:
-                log.info("Initial resolution population skipped: %s", exc)
-
             def _on_category_change(selected_group, state):
                 """Filter the Resolution Budget list to the chosen Category."""
                 try:
-                    import wgp as _wgp
-                except Exception:
-                    return gr.update()
-                try:
                     mt = self._state_model_type(state) or self._selected_model_type
-                    model_def = (self._wangp_session.get_model_def(mt) or {}) \
-                        if (self._wangp_session is not None and mt) else {}
-                    model_resolutions = model_def.get("resolutions", None)
-                    choices, _ = _wgp.get_resolution_choices(None, model_resolutions)
-                    if model_resolutions is None:
+                    # Model-locked resolutions: keep the full locked list.
+                    model_resolutions = None
+                    if self._wangp_session is not None and mt:
+                        md = self._wangp_session.get_model_def(mt) or {}
+                        model_resolutions = md.get("resolutions", None)
+                    if model_resolutions:
+                        return gr.update(choices=list(model_resolutions),
+                                         value=model_resolutions[0][1])
+                    # Otherwise filter by category. Prefer live wgp, else clone.
+                    enable_4k = False
+                    filtered = None
+                    try:
+                        import wgp as _wgp
+                        enable_4k = _wgp.server_config.get("enable_4k_resolutions", 0) == 1
+                        choices, _ = _wgp.get_resolution_choices(None, None)
                         filtered = [r for r in choices
                                     if _wgp.categorize_resolution(r[1]) == selected_group]
-                    else:
-                        filtered = model_resolutions
+                    except Exception:
+                        filtered = None
+                    if not filtered:
+                        try:
+                            from . import ltx_advanced as _adv_mod
+                        except Exception:
+                            import ltx_advanced as _adv_mod
+                        filtered = _adv_mod.resolutions_for_group(selected_group, enable_4k)
                     val = filtered[0][1] if filtered else None
                     return gr.update(choices=filtered, value=val)
                 except Exception as exc:
@@ -2208,35 +2254,66 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             pass
         return ""
 
+    def _refresh_resolution_updates(self, model_type: str):
+        """Return (group_update, resolution_update) repopulating the Category +
+        Resolution Budget dropdowns for a newly selected model."""
+        import gradio as gr
+        try:
+            groups, group_res, sel_group, sel_val = \
+                self._resolution_choices_for_model(model_type)
+            g_upd = gr.update(choices=groups, value=sel_group) if groups else gr.update()
+            r_upd = gr.update(choices=group_res, value=sel_val) if group_res else gr.update()
+            return g_upd, r_upd
+        except Exception as exc:
+            log.info("Resolution refresh skipped: %s", exc)
+            return gr.update(), gr.update()
+
     def _resolution_choices_for_model(self, model_type: str):
         """Return (groups, group_resolutions, selected_group, selected_value)
-        for the Category + Resolution Budget dropdowns, using WanGP's own
-        resolution helpers. Returns (None,...) if unavailable."""
+        for the Category + Resolution Budget dropdowns. Prefers WanGP's live
+        helpers (so model-locked resolutions are honored); falls back to the
+        cloned data in ltx_advanced so it always works."""
+        # Current resolution from live settings, if any.
+        cur = None
+        try:
+            s = self.get_current_model_settings(self.state) if hasattr(self, "state") else {}
+            cur = (s or {}).get("resolution") if isinstance(s, dict) else None
+        except Exception:
+            cur = None
+
+        # Model-locked resolutions take priority (a single "Locked" group).
+        model_resolutions = None
+        try:
+            if self._wangp_session is not None and model_type:
+                md = self._wangp_session.get_model_def(model_type) or {}
+                model_resolutions = md.get("resolutions", None)
+        except Exception:
+            model_resolutions = None
+        if model_resolutions:
+            val = cur if any(cur == r for _, r in model_resolutions) else model_resolutions[0][1]
+            return ["Locked"], list(model_resolutions), "Locked", val
+
+        # Try the live wgp module for an exact match (incl. 4K server setting).
         try:
             import wgp as _wgp
+            choices, cur2 = _wgp.get_resolution_choices(cur, None)
+            groups, group_res, sel_group = _wgp.group_resolutions({}, choices, cur2)
+            return groups, group_res, sel_group, cur2
         except Exception:
-            try:
-                import importlib
-                _wgp = importlib.import_module("wgp")
-            except Exception:
-                return None, None, None, None
+            pass
+
+        # Fallback: cloned data (identical lists/labels to the Video Generator).
+        enable_4k = False
         try:
-            model_def = {}
-            if self._wangp_session is not None and model_type:
-                model_def = self._wangp_session.get_model_def(model_type) or {}
-            model_resolutions = model_def.get("resolutions", None)
-            cur = None
-            try:
-                s = self.get_current_model_settings(self.state) if hasattr(self, "state") else {}
-            except Exception:
-                s = {}
-            cur = (s or {}).get("resolution") if isinstance(s, dict) else None
-            choices, cur = _wgp.get_resolution_choices(cur, model_resolutions)
-            groups, group_res, sel_group = _wgp.group_resolutions(model_def, choices, cur)
-            return groups, group_res, sel_group, cur
-        except Exception as exc:
-            log.info("Resolution choices unavailable: %s", exc)
-            return None, None, None, None
+            import wgp as _wgp
+            enable_4k = _wgp.server_config.get("enable_4k_resolutions", 0) == 1
+        except Exception:
+            enable_4k = False
+        try:
+            from . import ltx_advanced as _adv_mod
+        except Exception:
+            import ltx_advanced as _adv_mod
+        return _adv_mod.resolution_groups_and_selection(cur, enable_4k)
 
     def _progress_bar(self, cur, tot, width: int = 24) -> str:
         """Render a simple text progress bar for the status line."""
@@ -2372,7 +2449,10 @@ class LTXDirectorPlugin(WAN2GPPlugin):
       /* Bottom-align Save/Load action buttons with their taller inputs */
       "#wdc-save-row, #wdc-load-row, #wdc-loadpath-row { align-items: flex-end !important; }",
       "#wdc-save-row button, #wdc-load-row button, #wdc-loadpath-row button { margin-bottom: 0 !important; }",
-      "#wdc-clear-row { justify-content: flex-start; margin: 4px 0; }"
+      "#wdc-clear-row { justify-content: flex-start; margin: 4px 0; }",
+      /* Keep the result video player a fixed, modest size; fullscreen button still shows the big version */
+      "#wdc-result-video { max-width: 480px; }",
+      "#wdc-result-video video, #wdc-result-video .wrap, #wdc-result-video [data-testid='video'] { max-height: 360px !important; width: auto !important; object-fit: contain; }"
     ].join("\n");
     (document.head || document.documentElement).appendChild(css);
   }

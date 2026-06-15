@@ -35,6 +35,96 @@ import gradio as gr
 log = logging.getLogger(__name__)
 
 
+# ── Resolution data, cloned verbatim from WanGP's get_resolution_choices /
+#    group_thresholds / categorize_resolution so the Category + Resolution
+#    Budget dropdowns behave EXACTLY like the Video Generator even if the live
+#    wgp module can't be imported. (4K tier included; matches enable_4k.)
+_RES_CHOICES_4K = [
+    ("3840x2176 (16:9)", "3840x2176"), ("2176x3840 (9:16)", "2176x3840"),
+    ("3840x1664 (21:9)", "3840x1664"), ("1664x3840 (9:21)", "1664x3840"),
+    ("2560x1440 (16:9)", "2560x1440"), ("1440x2560 (9:16)", "1440x2560"),
+    ("1920x1440 (4:3)", "1920x1440"),  ("1440x1920 (3:4)", "1440x1920"),
+    ("2160x1440 (3:2)", "2160x1440"),  ("1440x2160 (2:3)", "1440x2160"),
+    ("1440x1440 (1:1)", "1440x1440"),  ("2688x1152 (21:9)", "2688x1152"),
+    ("1152x2688 (9:21)", "1152x2688"),
+]
+_RES_CHOICES_BASE = [
+    # 1080p
+    ("1920x1088 (16:9)", "1920x1088"), ("1088x1920 (9:16)", "1088x1920"),
+    ("1920x832 (21:9)", "1920x832"),   ("832x1920 (9:21)", "832x1920"),
+    # 720p
+    ("1024x1024 (1:1)", "1024x1024"),  ("1280x720 (16:9)", "1280x720"),
+    ("720x1280 (9:16)", "720x1280"),   ("1280x544 (21:9)", "1280x544"),
+    ("544x1280 (9:21)", "544x1280"),   ("1104x832 (4:3)", "1104x832"),
+    ("832x1104 (3:4)", "832x1104"),    ("960x960 (1:1)", "960x960"),
+    # 540p
+    ("960x544 (16:9)", "960x544"),     ("544x960 (9:16)", "544x960"),
+    # 480p
+    ("832x624 (4:3)", "832x624"),      ("624x832 (3:4)", "624x832"),
+    ("720x720 (1:1)", "720x720"),      ("832x480 (16:9)", "832x480"),
+    ("480x832 (9:16)", "480x832"),
+    # 384p
+    ("672x384 (16:9)", "672x384"),     ("384x672 (9:16)", "384x672"),
+    ("512x512 (1:1)", "512x512"),
+    # 320p
+    ("576x320 (16:9)", "576x320"),     ("320x576 (9:16)", "320x576"),
+    ("448x448 (1:1)", "448x448"),
+    # 256p
+    ("448x256 (7:4)", "448x256"),      ("256x448 (4:7)", "256x448"),
+    ("320x320 (1:1)", "320x320"),
+]
+_GROUP_THRESHOLDS = {
+    "256p": 448 * 256,   "320p": 448 * 448,   "384p": 512 * 512,
+    "480p": 832 * 624,   "540p": 960 * 544,   "720p": 1024 * 1024,
+    "1080p": 1920 * 1088, "1440p": 2560 * 1440, "2160p": 3840 * 2176,
+}
+
+
+def categorize_resolution(resolution_str: str) -> str:
+    """Bucket a 'WxH' string into a category by pixel count (clone of wgp)."""
+    try:
+        w, h = map(int, resolution_str.split("x"))
+    except Exception:
+        return "720p"
+    px = w * h
+    for group, thresh in _GROUP_THRESHOLDS.items():
+        if px <= thresh:
+            return group
+    return next(reversed(_GROUP_THRESHOLDS))
+
+
+def all_resolution_choices(enable_4k: bool = False) -> list:
+    """Full (label, value) resolution list, 4K tier optional (clone of wgp)."""
+    return (list(_RES_CHOICES_4K) if enable_4k else []) + list(_RES_CHOICES_BASE)
+
+
+def resolution_groups_and_selection(selected_resolution: str | None = None,
+                                    enable_4k: bool = False):
+    """Return (groups, group_resolutions, selected_group, selected_value),
+    matching how the Video Generator groups resolutions by Category. Groups are
+    ordered largest-first (as the Video Generator reverses them)."""
+    choices = all_resolution_choices(enable_4k)
+    if not selected_resolution or not any(selected_resolution == r for _, r in choices):
+        selected_resolution = "832x480"  # sensible LTX default
+    grouped: Dict[str, list] = {}
+    for label, res in choices:
+        grouped.setdefault(categorize_resolution(res), []).append((label, res))
+    # group_thresholds order is small→large; the UI shows large→small.
+    available = [g for g in _GROUP_THRESHOLDS if g in grouped]
+    available.reverse()
+    sel_group = categorize_resolution(selected_resolution)
+    sel_group_res = grouped.get(sel_group, [])
+    return available, sel_group_res, sel_group, selected_resolution
+
+
+def resolutions_for_group(group: str, enable_4k: bool = False) -> list:
+    """The (label, value) resolutions belonging to one Category group."""
+    return [(lbl, res) for (lbl, res) in all_resolution_choices(enable_4k)
+            if categorize_resolution(res) == group]
+
+
+
+
 # Setting keys this clone manages, grouped by the row/tab they belong to. The
 # order here is the canonical order used everywhere (component list, value
 # collection, visibility updates).
@@ -268,7 +358,9 @@ def collect_lora_multipliers(selected, phases, max_phases: int, *slider_vals):
 def build_advanced_ui(show_lora_sliders: bool = True,
                       initial_loras: list | None = None,
                       initial_spatial_methods: list | None = None,
-                      initial_spatial_ratios: list | None = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                      initial_spatial_ratios: list | None = None,
+                      external_resolution=None,
+                      external_resolution_group=None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build the 8-tab Advanced clone. Returns (components, tabs) where
     components maps field_key -> gradio component (in ADV_FIELD_ORDER) plus a
     few non-settings keys (loras_choices, loras_multipliers,
@@ -536,16 +628,24 @@ def build_advanced_ui(show_lora_sliders: bool = True,
                     label="Inference Steps")
                 c["video_length"] = gr.Slider(17, 1800, value=97, step=8,
                     label="Video Length (frames)")
-            with gr.Row():
-                c["resolution_group"] = gr.Dropdown(
-                    choices=[], value=None, scale=2,
-                    label="Category", allow_custom_value=True,
-                    elem_id="wdc-adv-res-group")
-                c["resolution"] = gr.Dropdown(
-                    choices=["832x480", "1280x720", "1024x576", "768x512", "512x512",
-                             "720x1280", "480x832"],
-                    value="832x480", allow_custom_value=True, scale=5,
-                    label="Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)",
-                    elem_id="wdc-adv-resolution")
+            # Resolution lives next to the model selector (built by the plugin
+            # and passed in). Reference those components here so the sync still
+            # targets them; only build a local fallback if none were provided.
+            if external_resolution is not None:
+                c["resolution"] = external_resolution
+                if external_resolution_group is not None:
+                    c["resolution_group"] = external_resolution_group
+            else:
+                with gr.Row():
+                    c["resolution_group"] = gr.Dropdown(
+                        choices=[], value=None, scale=2,
+                        label="Category", allow_custom_value=True,
+                        elem_id="wdc-adv-res-group")
+                    c["resolution"] = gr.Dropdown(
+                        choices=["832x480", "1280x720", "1024x576", "768x512", "512x512",
+                                 "720x1280", "480x832"],
+                        value="832x480", allow_custom_value=True, scale=5,
+                        label="Resolution Budget (Pixels will be reallocated to preserve Inputs W/H ratio)",
+                        elem_id="wdc-adv-resolution")
 
     return c, tabs
