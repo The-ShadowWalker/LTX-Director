@@ -5,6 +5,80 @@ this is designed for image injection and workflow enhancement. Maintained for Wa
 https://github.com/deepbeepmeep/Wan2GP.git
 
 
+v1.3.16
+
+Fixed
+
+
+Over-cap warning no longer over-fires. The warning now finds the actual
+sliding window a keyframe falls into and only flags it if that window
+extends past WanGP's frame cap. A keyframe whose window ends exactly on the
+cap is treated as fine — only windows that genuinely run past it are flagged.
+All cap/timing logic is settings-driven, not hardcoded. The warning label,
+the window layout, the risk dialog, and the "past the default" count are all
+computed from the live fps, window size/overlap, and the cap value read from
+WanGP — no hardcoded frame numbers or seconds.
+
+
+Added
+
+
+Risk acknowledgment on the override. Enabling "past cap" now requires an
+explicit confirmation that explains it bypasses WanGP's built-in maximum
+frame limit, that the limit guards against running out of VRAM, and that the
+user proceeds at their own risk. Declining leaves it off.
+
+
+v1.3.15
+
+Added
+
+
+"Past cap" override moved into the timeline toolbar (next to bands/snap),
+so it's visible instead of buried in a collapsed panel.
+Session-safe cap handling. When the override is on, the plugin raises
+WanGP's max_source_video_frames to cover the whole timeline on each
+generation. When it's turned off, the cap is restored to WanGP's original
+value on the next generation, so behavior returns to normal within the same
+session without a restart.
+
+
+v1.3.14
+
+Added
+
+
+Plugin raises the cap itself. With the override on, the plugin sets
+WanGP's max_source_video_frames to fit the project on every generation, so
+long injected-frame timelines work without hand-editing wgp.py. The value
+is only ever raised, never lowered.
+
+
+v1.3.13
+
+Added
+
+
+Override toggle + live cap reading. The plugin reads WanGP's
+max_source_video_frames at runtime (instead of assuming a fixed number) and
+adds an override so injected-frame positions past the cap can be sent through
+rather than clamped.
+
+
+v1.3.12
+
+Fixed
+
+
+"Invalid Frame Position" error past ~120s. WanGP rejects injected image
+positions beyond its max_source_video_frames cap (3000 frames ≈ 125s at
+24fps). Long timelines hit this and the whole job was refused. Positions are
+now handled against that cap so generation isn't blocked, and an on-timeline
+marker flags keyframes that sit past it. The original keyframe position
+semantics are otherwise unchanged.
+
+
+
 v1.3.11
 
 Fixed
@@ -108,13 +182,3 @@ Snap to edges, with a toggle. A new snap checkbox in the timeline
 toolbar. When on, segment edges snap to other segments, the playhead, and
 sliding-window boundaries while dragging. Hold Alt to bypass snapping
 momentarily.
-
-
-Changed
-
-
-New defaults: Model defaults to LTX-2 2.3 Distilled 1.1 22B, Category
-defaults to 720p, and Resolution Budget defaults to 720x1280 (9:16).
-
-
-defaults to 720p, and Resolution Budget defaults to 720x1280 (9:16).
