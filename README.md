@@ -5,6 +5,47 @@ this is designed for image injection and workflow enhancement. Maintained for Wa
 https://github.com/deepbeepmeep/Wan2GP.git
 
 
+v1.3.11
+
+Fixed
+
+
+Sliding-window count now honors "Discard last frames." Window math was
+computing the stride as size − overlap, but the engine uses
+size − discard − overlap. With a non-zero discard setting the window count
+and the on-timeline window bands could drift from what the generator actually
+produced. Discard is now threaded through the count, the preview, the window
+bands, and save/restore. (Default discard is 0, so this only affected setups
+that changed it.)
+Verified the window-count formula against the Wan2GP reference across tens of
+thousands of valid configurations — it matches the engine exactly.
+
+
+v1.3.10
+
+Added
+
+
+requirements.txt for reference/documentation. A working Wan2GP install
+already provides every dependency the plugin uses (av, soundfile, numpy are
+in Wan2GP's own requirements; Pillow comes in transitively), so nothing
+normally needs installing — the file documents what the plugin imports and
+acts as a safety net for slimmed-down installs.
+
+
+v1.3.9
+
+Fixed
+
+
+Audio clips no longer show a false sliding-window boundary warning. Audio
+is a single continuous file that spans the whole timeline and is never split
+at window boundaries, so the crossing warning (border, ⚠ marker, and the
+properties-panel notice) no longer appears for audio. Image and text segments
+still get the warning, since those are genuinely window-bound.
+
+
+
 v1.3.8
 
 Fixed
@@ -71,6 +112,9 @@ momentarily.
 
 Changed
 
-the way it saves everything is now put in a zip file, fixing the error that you get when it was saving everything in just a Json file. 
+
 New defaults: Model defaults to LTX-2 2.3 Distilled 1.1 22B, Category
+defaults to 720p, and Resolution Budget defaults to 720x1280 (9:16).
+
+
 defaults to 720p, and Resolution Budget defaults to 720x1280 (9:16).
