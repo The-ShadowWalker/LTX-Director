@@ -1,0 +1,25 @@
+# LTX Director — dependencies (REFERENCE / DOCUMENTATION ONLY)
+#
+# You normally do NOT need to install anything. A working Wan2GP (WanGP) install
+# already provides every dependency this plugin uses — all of the packages below
+# are present in WanGP's own requirements (av, soundfile, numpy are listed
+# explicitly; Pillow comes in transitively via diffusers / transformers /
+# imageio / opencv / moviepy).
+#
+# This file exists only to document what the plugin actually imports, so it's
+# clear what it relies on. If you ever run it on a stock WanGP environment, pip
+# will simply report everything as already satisfied:
+#
+#     pip install -r requirements.txt
+#
+# Do NOT pin or reinstall torch / gradio / numpy from here — WanGP controls those
+# versions and changing them can break your install. wgp / shared /
+# postprocessing are WanGP's own modules, not pip packages.
+#
+# ── What the plugin imports (all provided by WanGP) ──
+#   Pillow      image keyframe decode/encode, thumbnails      (transitive in WanGP)
+#   numpy       waveform / array handling                     (WanGP: numpy==2.1.2)
+#   av (PyAV)   audio decode + multi-clip audio mixing        (WanGP: av)
+#   soundfile   write the combined audio track to WAV         (WanGP: soundfile)
+#
+# Left intentionally without pins — see notes above.

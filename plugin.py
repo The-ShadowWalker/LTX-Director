@@ -342,7 +342,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.3.8"
+PLUGIN_VERSION = "1.3.11"
 # v1.3.6:
 #  - FIX (Recover Last lost settings): the auto-backup payload omitted the
 #    Advanced settings, LoRAs, model and resolution — so Recover restored
@@ -1320,11 +1320,13 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 settings = self.get_current_model_settings(state)
                 ws = settings.get("sliding_window_size", None)
                 ov = settings.get("sliding_window_overlap", None)
+                disc = settings.get("sliding_window_discard_last_frames", 0)
                 if ws is None:
                     return "", "⚠️ Current model has no sliding window settings."
                 payload = json.dumps({
                     "slidingWindowSize":    int(ws),
                     "slidingWindowOverlap": int(ov or 0),
+                    "slidingWindowDiscard": int(disc or 0),
                 })
                 return payload, f"⟲ Window settings synced from generator: size **{int(ws)}f**, overlap **{int(ov or 0)}f**."
             except Exception as e:
@@ -1703,6 +1705,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             _tf   = max(1, round(_dur * _fps)) + 1
             _ws   = int(parsed.get("slidingWindowSize", 0) or 0)
             _ov   = int(parsed.get("slidingWindowOverlap", 0) or 0)
+            _disc = int(parsed.get("slidingWindowDiscard", 0) or 0)
             if _ws > 0:
                 _ws, _ov = _snap_window_pair(_ws, _ov)
 
@@ -1719,7 +1722,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             win_info = ""
             if prompt_mode == "PW":
                 # Report the SAME count WanGP will show in "Sliding Window X/N".
-                n_win = _wangp_window_count(_tf, _ws, _ov)
+                n_win = _wangp_window_count(_tf, _ws, _ov, _disc)
                 win_info = (f"**Sliding windows:** {n_win} × {_ws}f, overlap {_ov}f — "
                             f"**{_ws - _ov} new frames** per window after the first\n\n")
 
@@ -1770,6 +1773,15 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             # deliberate timeline value (e.g. 417). Snapped to LTX's 8k+1 grid.
             _win_size = int(_tparsed_pre.get("slidingWindowSize", 0) or 0)
             _win_ovl  = int(_tparsed_pre.get("slidingWindowOverlap", 0) or 0)
+            # Discard-last-frames (advanced slider). WanGP's window stride is
+            # (size - discard - overlap), so we must honor it for the count to
+            # match the engine when the user sets it non-zero.
+            _win_disc = 0
+            if adv:
+                try:
+                    _win_disc = int(adv.get("sliding_window_discard_last_frames", 0) or 0)
+                except Exception:
+                    _win_disc = 0
             if _win_size <= 0 and adv:
                 # Timeline didn't specify — fall back to the Advanced clone.
                 _adv_ws = int(adv.get("sliding_window_size", 0) or 0)
@@ -1973,7 +1985,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             if n_audio:
                 parts.append(f"**{n_audio} audio clip(s)**")
             if prompt_mode == "PW":
-                n_win = _wangp_window_count(total_frames, _win_size, _win_ovl)
+                n_win = _wangp_window_count(total_frames, _win_size, _win_ovl, _win_disc)
                 parts.append(f"**{n_win} sliding windows** ({_win_size}f / ovl {_win_ovl}f, mode PW)")
             else:
                 parts.append("**single window** (mode FG)")
@@ -3312,6 +3324,7 @@ let audio = [];   // {id,type:'audio',start,length,trimStart,audioB64,fileName}
 // ── Sliding windows ──────────────────────────────────────────────────────────
 let winSize     = 129;   // frames per sliding window (WanGP LTX default)
 let winOverlap  = 9;     // overlap frames between consecutive windows
+let winDiscard  = 0;     // discard last frames (WanGP stride = size - discard - overlap)
 let showWindows = true;  // draw window bands + boundary warnings
 
 // LTX 2.3 frame grid: the VAE compresses time 8 frames per latent, so
@@ -3338,7 +3351,10 @@ function getWindows() {
   const dF = durF();
   const ws = Math.max(8, winSize|0);
   const ov = Math.min(Math.max(0, winOverlap|0), ws - 1);
-  const stride = ws - ov;
+  const disc = Math.max(0, winDiscard|0);
+  // WanGP advances each window by (size - discard - overlap).
+  let stride = ws - disc - ov;
+  if (stride <= 0) stride = Math.max(1, ws - ov);
   const out = [];
   let s = 0, i = 0;
   while (s < dF && i < 500) {
@@ -3366,9 +3382,12 @@ function crossingBoundaries(seg) {
 }
 
 function allCrossingSegs() {
+  // NOTE: audio is intentionally excluded. An audio clip is a single
+  // continuous file spanning the whole timeline — it does NOT get split at
+  // sliding-window boundaries, so warning that it "crosses" a window is a false
+  // alarm. Only image/text segments are window-bound.
   const out = [];
   for (const s of segs)  { const c = crossingBoundaries(s); if (c.length) out.push({seg: s, track: 'image', boundaries: c}); }
-  for (const s of audio) { const c = crossingBoundaries(s); if (c.length) out.push({seg: s, track: 'audio', boundaries: c}); }
   return out;
 }
 
@@ -3750,8 +3769,9 @@ function drawSeg(seg, track) {
     ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
   }
 
-  // Border — amber dashed if the segment crosses a sliding-window boundary
-  const crosses = crossingBoundaries(seg);
+  // Border — amber dashed if the segment crosses a sliding-window boundary.
+  // Audio is exempt: it's one continuous file and never split at windows.
+  const crosses = (track === 'audio') ? [] : crossingBoundaries(seg);
   if (crosses.length) {
     ctx.strokeStyle = '#ffb84d';
     ctx.lineWidth = 2; ctx.setLineDash([5,3]);
@@ -4278,8 +4298,10 @@ function updateProps() {
     'Length: ' + (s.length/fps).toFixed(2) + 's  ·  Trim start: ' + ((s.trimStart||0)/fps).toFixed(2) + 's';
 
   // ── Sliding-window boundary warning + fix buttons ─────────────────────
+  // Audio never gets this warning — it's a single continuous file, not split
+  // at sliding-window boundaries.
   const warnEl  = document.getElementById('prop-warning');
-  const crosses = crossingBoundaries(s);
+  const crosses = (selTrack === 'audio') ? [] : crossingBoundaries(s);
   if (crosses.length) {
     warnEl.style.display = 'flex';
     const bList = crosses.map(b => 'frame ' + b + ' (' + (b/fps).toFixed(2) + 's)').join(', ');
@@ -4546,6 +4568,7 @@ function commit() {
     durationSec: durSec,
     slidingWindowSize:    winSize,
     slidingWindowOverlap: winOverlap,
+    slidingWindowDiscard: winDiscard,
     showWindows:          showWindows,
     segments:      sorted.map(({imgObj,...r}) => r),
     audioSegments: audio.map(s => ({...s})),
@@ -4580,6 +4603,8 @@ window.addEventListener('message', function(e) {
     // Sync from the Video Generator's Sliding Window tab.
     const ws0 = parseInt(d.data.slidingWindowSize);
     const ov0 = parseInt(d.data.slidingWindowOverlap);
+    const dc0 = parseInt(d.data.slidingWindowDiscard);
+    if (!isNaN(dc0) && dc0 >= 0) winDiscard = dc0;
     if (!isNaN(ws0) && ws0 >= 8) {
       const pair = snapWindowPair(ws0, isNaN(ov0) ? winOverlap : ov0);
       winSize = pair[0]; winOverlap = pair[1];
@@ -4628,6 +4653,7 @@ window.addEventListener('message', function(e) {
         const pair = snapWindowPair(parseInt(winSrc.slidingWindowSize) || 129,
                                     parseInt(winSrc.slidingWindowOverlap) || 9);
         winSize = pair[0]; winOverlap = pair[1];
+        if (winSrc.slidingWindowDiscard !== undefined) winDiscard = parseInt(winSrc.slidingWindowDiscard) || 0;
         if (winSrc.showWindows !== undefined) showWindows = !!winSrc.showWindows;
         document.getElementById('ctrl-win').value = winSize;
         document.getElementById('ctrl-ovl').value = winOverlap;
