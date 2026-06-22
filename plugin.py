@@ -342,7 +342,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.3.11"
+PLUGIN_VERSION = "1.3.16"
 # v1.3.6:
 #  - FIX (Recover Last lost settings): the auto-backup payload omitted the
 #    Advanced settings, LoRAs, model and resolution — so Recover restored
@@ -812,6 +812,79 @@ def _snap_window_pair(win_size: int, win_overlap: int) -> tuple:
     return ws, ov
 
 
+_WANGP_ORIG_CAP = None   # WanGP's max_source_video_frames as first seen (baseline)
+
+def _wangp_capture_orig_cap():
+    """Remember WanGP's original max_source_video_frames the first time we see
+    it, so we can always restore it later in the same session."""
+    global _WANGP_ORIG_CAP
+    if _WANGP_ORIG_CAP is None:
+        try:
+            import wgp as _wgp
+            v = getattr(_wgp, "max_source_video_frames", None)
+            if isinstance(v, (int, float)) and int(v) > 0:
+                _WANGP_ORIG_CAP = int(v)
+        except Exception:
+            pass
+    return _WANGP_ORIG_CAP
+
+
+def _wangp_restore_orig_cap() -> bool:
+    """Restore WanGP's max_source_video_frames to its original baseline. Called
+    when the override is OFF so an earlier raised cap doesn't persist for the
+    rest of the session — if the user unchecks the box, WanGP goes back to
+    behaving exactly as it did before."""
+    try:
+        import wgp as _wgp
+        if _WANGP_ORIG_CAP is not None:
+            cur = getattr(_wgp, "max_source_video_frames", None)
+            if cur != _WANGP_ORIG_CAP:
+                _wgp.max_source_video_frames = _WANGP_ORIG_CAP
+                log.info("LTX Director: restored wgp.max_source_video_frames to "
+                         "its original value (%d).", _WANGP_ORIG_CAP)
+        return True
+    except Exception as exc:
+        log.warning("LTX Director: could not restore wgp.max_source_video_frames: %s", exc)
+        return False
+
+
+def _wangp_set_injection_cap(new_cap: int) -> bool:
+    """Raise WanGP's injected-frame-position ceiling
+    (wgp.max_source_video_frames) at runtime so longer injected timelines pass
+    validation. The value is a module global read live at generation time, so
+    setting it here takes effect on the next generation without a restart.
+    Only ever RAISES it (never lowers below WanGP's own default) to avoid
+    shrinking the limit for other features/plugins. Returns True on success."""
+    try:
+        import wgp as _wgp
+        _wangp_capture_orig_cap()          # remember baseline before changing
+        cur = getattr(_wgp, "max_source_video_frames", 0) or 0
+        target = int(new_cap)
+        if target > int(cur):
+            _wgp.max_source_video_frames = target
+            log.info("LTX Director: raised wgp.max_source_video_frames %d -> %d "
+                     "for this generation (override on).", int(cur), target)
+        return True
+    except Exception as exc:
+        log.warning("LTX Director: could not set wgp.max_source_video_frames: %s", exc)
+        return False
+
+
+def _wangp_max_injection_pos(default: int = 3000) -> int:
+    """Read WanGP's injected-frame-position ceiling (max_source_video_frames)
+    LIVE from the wgp module, so we always use whatever value the running
+    Wan2GP actually enforces — even if the user has changed it. Falls back to
+    `default` only if wgp isn't importable / doesn't expose it."""
+    try:
+        import wgp as _wgp
+        v = getattr(_wgp, "max_source_video_frames", None)
+        if isinstance(v, (int, float)) and int(v) > 0:
+            return int(v)
+    except Exception:
+        pass
+    return int(default)
+
+
 def _wangp_window_count(video_length: int, win_size: int, win_overlap: int,
                         discard_last_frames: int = 0) -> int:
     """EXACT clone of WanGP's compute_sliding_window_no (wgp.py):
@@ -971,6 +1044,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         self._wangp_session = None
         self.has_gen_api    = False
         self._selected_model_type = ""
+        self._allow_past_cap = False   # override: send injected positions past WanGP's cap
         self.name        = PlugIn_Name
         self.version     = PLUGIN_VERSION
         self.description = (
@@ -1081,6 +1155,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 "⏹ Stop", variant="stop", scale=1,
                 elem_id="wdc-cancel-here-btn", visible=self.has_gen_api,
             )
+
 
         if not self.has_gen_api:
             gr.Markdown(
@@ -1327,6 +1402,7 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                     "slidingWindowSize":    int(ws),
                     "slidingWindowOverlap": int(ov or 0),
                     "slidingWindowDiscard": int(disc or 0),
+                    "wangpMaxPos":          _wangp_max_injection_pos(3000),
                 })
                 return payload, f"⟲ Window settings synced from generator: size **{int(ws)}f**, overlap **{int(ov or 0)}f**."
             except Exception as e:
@@ -1855,7 +1931,75 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                     settings["image_refs"]  = ref_images
                     settings["image_start"] = [ref_images[0]]
                 settings["video_prompt_type"] = "KFI"
-                positions = ["1"] + [str(int(s.get("start", 0))) for s in img_segs_sorted[1:]]
+                # IMPORTANT: keep the ORIGINAL position semantics exactly as the
+                # pristine image-line logic always used them (first image pinned
+                # frames_positions semantics are UNCHANGED (first image pinned
+                # to "1", others use their timeline start frame).
+                #
+                # WanGP rejects positions > max_source_video_frames. We read
+                # that ceiling LIVE from wgp (so it tracks any value the user
+                # set — e.g. if they raised it in wgp.py), instead of assuming
+                # Behavior depends on the override:
+                #   • override OFF (default): clamp positions to WanGP's current
+                #     cap so the job never errors, and warn what was clamped.
+                #   • override ON: RAISE wgp.max_source_video_frames to cover the
+                #     whole project (so the user doesn't have to edit wgp.py),
+                #     then send positions unchanged. Done every generation.
+                allow_past_cap = bool(_tparsed_pre.get("allowPastCap", False))
+                # Always know WanGP's original cap so we can restore it.
+                _wangp_capture_orig_cap()
+                positions_raw = [1]   # first image pinned to position 1
+                for s in img_segs_sorted[1:]:
+                    p = int(s.get("start", 0))         # original semantics
+                    if p < 1:
+                        p = 1
+                    positions_raw.append(p)
+
+                if allow_past_cap:
+                    # Make the cap big enough for this project's furthest
+                    # position (+ a small margin), then send positions as-is.
+                    # Use WanGP's ORIGINAL cap (captured live) as the reference
+                    # for "past the default", never a hardcoded number.
+                    _orig_cap = _wangp_capture_orig_cap() or _wangp_max_injection_pos()
+                    needed = max(positions_raw + [int(total_frames)])
+                    _wangp_set_injection_cap(needed + 1)
+                    _wangp_cap = _wangp_max_injection_pos(needed + 1)
+                    positions = [str(p) for p in positions_raw]
+                    _over = [p for p in positions_raw if p > _orig_cap]
+                    if _over:
+                        log.info("LTX Director: OVERRIDE on — raised WanGP cap to "
+                                 "%d to fit %d keyframe(s) past the default.",
+                                 _wangp_cap, len(_over))
+                else:
+                    # Override OFF — make sure any cap we raised earlier in this
+                    # session is put back to WanGP's original value, so behavior
+                    # returns to normal the moment the user unchecks the box.
+                    _wangp_restore_orig_cap()
+                    _wangp_cap = _wangp_max_injection_pos(3000)
+                    positions, _over = [], []
+                    for p in positions_raw:
+                        if p > _wangp_cap:
+                            _over.append(p); p = _wangp_cap
+                        positions.append(str(p))
+                    # The timeline can run PAST the cap even when every keyframe
+                    # START is under it — a window that starts before the cap can
+                    # extend beyond it (e.g. a keyframe at 2880 lives in a window
+                    # ending at ~3377). Warn on that too so it isn't a surprise.
+                    if _over:
+                        log.warning(
+                            "LTX Director: %d keyframe(s) sit past WanGP's cap "
+                            "(%d frames). Clamped so the job runs. Enable the "
+                            "'Allow long timelines past WanGP's frame cap' "
+                            "checkbox to send them unchanged (the plugin raises "
+                            "the cap for you).", len(_over), _wangp_cap)
+                    elif int(total_frames) > _wangp_cap:
+                        log.warning(
+                            "LTX Director: the timeline runs to %d frames, past "
+                            "WanGP's cap (%d). Even keyframes before the cap sit "
+                            "in windows that extend beyond it, which can fail. "
+                            "Enable 'Allow long timelines past WanGP's frame "
+                            "cap' to raise the cap automatically.",
+                            int(total_frames), _wangp_cap)
                 settings["frames_positions"] = " ".join(positions)
             else:
                 for k in ("image_refs","image_start","video_prompt_type","frames_positions"):
@@ -3254,6 +3398,9 @@ input[type=range].slider::-webkit-slider-thumb {
   <label class="lbl" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer" title="Snap segment edges to other segments, the playhead, and window boundaries while dragging (hold Alt to bypass)">
     <input type="checkbox" id="ctrl-snap" checked> snap
   </label>
+  <label class="lbl" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer" title="Allow long timelines past WanGP's frame cap. When on, the plugin raises max_source_video_frames to cover your whole timeline on each generation, so injected keyframes past ~125s (3000 frames) work. Watch VRAM on very long renders.">
+    <input type="checkbox" id="ctrl-allowcap"> past cap
+  </label>
   <div class="sep"></div>
   <button class="btn" id="btn-play" title="Play/pause a preview of the timeline with the playhead and any audio">[Play]</button>
   <button class="btn danger" id="btn-clear" title="Remove all segments from the timeline (asks first)">🗑 Clear</button>
@@ -3325,6 +3472,8 @@ let audio = [];   // {id,type:'audio',start,length,trimStart,audioB64,fileName}
 let winSize     = 129;   // frames per sliding window (WanGP LTX default)
 let winOverlap  = 9;     // overlap frames between consecutive windows
 let winDiscard  = 0;     // discard last frames (WanGP stride = size - discard - overlap)
+let wangpMaxPos = 3000;  // WanGP max_source_video_frames (synced from generator)
+let allowPastCap = false;// override: if on, don't show the over-cap warning as blocking
 let showWindows = true;  // draw window bands + boundary warnings
 
 // LTX 2.3 frame grid: the VAE compresses time 8 frames per latent, so
@@ -3772,6 +3921,29 @@ function drawSeg(seg, track) {
   // Border — amber dashed if the segment crosses a sliding-window boundary.
   // Audio is exempt: it's one continuous file and never split at windows.
   const crosses = (track === 'audio') ? [] : crossingBoundaries(seg);
+
+  // Hard cap: WanGP rejects an injected image only if the WINDOW it lands in
+  // actually extends PAST max_source_video_frames. A keyframe whose window ends
+  // exactly ON the cap is fine — only a window ending strictly beyond it fails.
+  // We find the real window containing the keyframe (not an assumed one) and
+  // compare that window's end. Suppressed when the 'past cap' override is on.
+  let overCap = false;
+  if (!allowPastCap && track === 'image' && seg.type !== 'text' && durF() > wangpMaxPos) {
+    const wins = getWindows();
+    // The window a position belongs to is the LAST window whose start <= pos.
+    let host = null;
+    for (const w of wins) { if (w.start <= seg.start) host = w; else break; }
+    if (host && host.end > wangpMaxPos) overCap = true;
+  }
+  if (overCap) {
+    ctx.strokeStyle = '#ff5555';
+    ctx.lineWidth = 2.5; ctx.setLineDash([4,3]);
+    roundRect(x, trackY+2, w, trackH-4, 4); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ff7777'; ctx.font = 'bold 10px sans-serif';
+    const capSec = (wangpMaxPos / Math.max(1, fps)).toFixed(0);
+    if (w > 30) ctx.fillText('⚠ past ' + capSec + 's cap', x + 5, trackY + 14);
+  }
   if (crosses.length) {
     ctx.strokeStyle = '#ffb84d';
     ctx.lineWidth = 2; ctx.setLineDash([5,3]);
@@ -4199,6 +4371,34 @@ document.getElementById('ctrl-snap').addEventListener('change', e => {
   setStatus('Snapping ' + (snapEnabled ? 'on' : 'off') + '.');
 });
 
+document.getElementById('ctrl-allowcap').addEventListener('change', e => {
+  if (e.target.checked) {
+    // Enabling the override bypasses WanGP's built-in safety limit — make the
+    // user explicitly acknowledge the risk before it turns on.
+    const capSec = (wangpMaxPos / Math.max(1, fps)).toFixed(0);
+    const ok = confirm(
+      "⚠ BYPASS WanGP's maximum frame limit?\n\n" +
+      "WanGP caps injected-frame timelines at its max_source_video_frames (" +
+      wangpMaxPos + " frames ≈ " + capSec + "s at " + fps + "fps). That cap " +
+      "exists to protect against running out of video memory and other " +
+      "failures.\n\n" +
+      "Turning this ON makes the plugin RAISE that cap to fit your whole " +
+      "timeline on every generation, so longer renders are allowed. You are " +
+      "proceeding past the app's safety limit AT YOUR OWN RISK — very long " +
+      "timelines may crash, run out of VRAM, or produce bad output.\n\n" +
+      "It returns to normal the moment you turn this off.\n\n" +
+      "Proceed?");
+    if (!ok) { e.target.checked = false; allowPastCap = false; return; }
+    allowPastCap = true;
+    setStatus('⚠ Past-cap ON — bypassing WanGP\'s frame limit at your own risk. Watch VRAM on long renders.');
+  } else {
+    allowPastCap = false;
+    setStatus('Past-cap OFF — WanGP frame cap restored to its original value; long positions clamped.');
+  }
+  render();   // refresh the over-cap markers
+  commit();   // persist the flag so Python sees it
+});
+
 // Play/pause
 function setPlayhead(f) {
   playhead = clamp(f,0,durF());
@@ -4569,6 +4769,7 @@ function commit() {
     slidingWindowSize:    winSize,
     slidingWindowOverlap: winOverlap,
     slidingWindowDiscard: winDiscard,
+    allowPastCap: allowPastCap,
     showWindows:          showWindows,
     segments:      sorted.map(({imgObj,...r}) => r),
     audioSegments: audio.map(s => ({...s})),
@@ -4604,7 +4805,9 @@ window.addEventListener('message', function(e) {
     const ws0 = parseInt(d.data.slidingWindowSize);
     const ov0 = parseInt(d.data.slidingWindowOverlap);
     const dc0 = parseInt(d.data.slidingWindowDiscard);
+    const mp0 = parseInt(d.data.wangpMaxPos);
     if (!isNaN(dc0) && dc0 >= 0) winDiscard = dc0;
+    if (!isNaN(mp0) && mp0 > 0) { wangpMaxPos = mp0; render(); }
     if (!isNaN(ws0) && ws0 >= 8) {
       const pair = snapWindowPair(ws0, isNaN(ov0) ? winOverlap : ov0);
       winSize = pair[0]; winOverlap = pair[1];
@@ -4654,6 +4857,11 @@ window.addEventListener('message', function(e) {
                                     parseInt(winSrc.slidingWindowOverlap) || 9);
         winSize = pair[0]; winOverlap = pair[1];
         if (winSrc.slidingWindowDiscard !== undefined) winDiscard = parseInt(winSrc.slidingWindowDiscard) || 0;
+        if (winSrc.allowPastCap !== undefined) {
+          allowPastCap = !!winSrc.allowPastCap;
+          const acb = document.getElementById('ctrl-allowcap');
+          if (acb) acb.checked = allowPastCap;
+        }
         if (winSrc.showWindows !== undefined) showWindows = !!winSrc.showWindows;
         document.getElementById('ctrl-win').value = winSize;
         document.getElementById('ctrl-ovl').value = winOverlap;
