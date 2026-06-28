@@ -342,7 +342,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.3.16"
+PLUGIN_VERSION = "1.3.23"
 # v1.3.6:
 #  - FIX (Recover Last lost settings): the auto-backup payload omitted the
 #    Advanced settings, LoRAs, model and resolution — so Recover restored
@@ -398,6 +398,63 @@ PLUGIN_VERSION = "1.3.16"
 PLUGIN_DIR       = Path(__file__).parent
 MH_LOGO_PATH     = PLUGIN_DIR / "assets" / "mh_logo.jpg"
 CONFIG_PATH      = PLUGIN_DIR / "ltx_director_config.json"
+
+
+def _effective_window_defaults(model_type: str) -> dict:
+    """Return the window defaults to seed the UI with, honoring the plugin's
+    'settings source' choice:
+      • use_wangp_settings = True  -> read WanGP's saved per-model settings.
+      • use_wangp_settings = False -> use the plugin's own saved defaults
+        (ltx_director_config.json -> window_defaults), if any.
+    Falls back to WanGP's LTX2 defaults (size 481 / overlap 17) either way."""
+    cfg = _load_config()
+    use_wangp = bool(cfg.get("use_wangp_settings", True))
+    out = {"sliding_window_size": 481, "sliding_window_overlap": 17,
+           "sliding_window_discard_last_frames": 0}
+    if use_wangp:
+        saved = _wangp_model_saved_settings(model_type) or {}
+        for k in out:
+            if saved.get(k) not in (None, ""):
+                out[k] = saved[k]
+    else:
+        own = (cfg.get("window_defaults") or {})
+        for k in out:
+            if own.get(k) not in (None, ""):
+                out[k] = own[k]
+    return out
+
+
+def _wangp_model_saved_settings(model_type: str) -> dict:
+    """Read WanGP's saved per-model settings file
+    ({settings_dir}/{model_type}_settings.json) so the plugin honors whatever
+    the user set and saved as default in the Video Generation tab (e.g. their
+    own sliding-window size/overlap). Falls back to wgp.get_default_settings,
+    then to {} so callers can use their own defaults."""
+    if not model_type:
+        return {}
+    try:
+        import wgp as _wgp
+        # Preferred: WanGP's own loader (handles version fixes/migrations).
+        if hasattr(_wgp, "get_default_settings"):
+            try:
+                s = _wgp.get_default_settings(model_type)
+                if isinstance(s, dict):
+                    return s
+                # some builds return (settings, ...) tuples
+                if isinstance(s, (list, tuple)) and s and isinstance(s[0], dict):
+                    return s[0]
+            except Exception:
+                pass
+        # Fallback: read the settings file path directly.
+        if hasattr(_wgp, "get_settings_file_name"):
+            import json as _json, os as _os
+            fn = _wgp.get_settings_file_name(model_type)
+            if fn and _os.path.isfile(fn):
+                with open(fn, "r", encoding="utf-8") as f:
+                    return _json.load(f)
+    except Exception as exc:
+        log.info("Could not read WanGP saved settings for %s: %s", model_type, exc)
+    return {}
 
 
 def _load_config() -> dict:
@@ -1094,6 +1151,30 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             "Changes are **auto-saved** every few seconds so a page freeze won't lose your work."
         )
 
+        # Resolve the default model and its saved window settings EARLY, before
+        # the timeline iframe is built, so the timeline seeds from the correct
+        # window size/overlap (not the hardcoded 129/9 fallback).
+        _early_models = self._list_ltx_models()
+        _early_choices = [(m["label"], m["model_type"]) for m in _early_models]
+        def _early_pick(choices):
+            for label, mt in choices:
+                if mt == "ltx2_22B_distilled_1_1":
+                    return mt
+            for label, mt in choices:
+                if " ".join((label or "").lower().split()) == "ltx-2 2.3 distilled 1.1 22b":
+                    return mt
+            return choices[0][1] if choices else None
+        _early_model = _early_pick(_early_choices)
+        _early_saved = _effective_window_defaults(_early_model) if _early_model else {
+            "sliding_window_size": 481, "sliding_window_overlap": 17,
+            "sliding_window_discard_last_frames": 0}
+        # Honor saved window settings; fall back to WanGP's LTX2 defaults
+        # (size 481 / overlap 17).
+        self._init_win_size = _early_saved.get("sliding_window_size", None) or 481
+        self._init_win_ovl  = _early_saved.get("sliding_window_overlap", None) or 17
+        self._init_win_disc = _early_saved.get("sliding_window_discard_last_frames", None) or 0
+
+
         # ── Hidden state fields written by iframe via postMessage ──────────
         with gr.Row(visible=False):
             timeline_data_box   = gr.Textbox(value="{}", elem_id="wdc_timeline_data")
@@ -1191,20 +1272,46 @@ class LTXDirectorPlugin(WAN2GPPlugin):
 
         _ltx_models = self._list_ltx_models()
         _model_choices = [(m["label"], m["model_type"]) for m in _ltx_models]
-        # Preferred default model: "LTX-2 2.3 Distilled 1.1 22B" if available,
-        # otherwise the first listed model.
+        # Preferred default model: "LTX-2 2.3 Distilled 1.1 22B".
+        # Verified from WanGP source (defaults/ltx2_22B_distilled_1_1.json):
+        #   model_type = "ltx2_22B_distilled_1_1"
+        #   name       = "LTX-2 2.3 Distilled 1.1 22B"
+        # NOTE the 1.0 variant ("ltx2_22B_distilled" / "...Distilled 1.0 22B")
+        # also contains distilled+2.3+22b, so we must match 1.1 specifically.
         def _pick_default_model(choices):
+            def norm(s): return " ".join((s or "").lower().split())
+            # 1) exact model_type (most reliable)
             for label, mt in choices:
-                lab = (label or "").lower()
-                if "distilled" in lab and "22b" in lab and "2.3" in lab:
+                if mt == "ltx2_22B_distilled_1_1":
                     return mt
+            # 2) exact display label
             for label, mt in choices:
-                if "distilled" in (label or "").lower() and "22b" in (label or "").lower():
+                if norm(label) == "ltx-2 2.3 distilled 1.1 22b":
+                    return mt
+            # 3) distilled + 1.1 + 22b
+            for label, mt in choices:
+                lab = norm(label)
+                if "distilled" in lab and "1.1" in lab and "22b" in lab:
+                    return mt
+            # 4) any distilled 22b on 2.3 (last resort, may be 1.0)
+            for label, mt in choices:
+                lab = norm(label)
+                if "distilled" in lab and "2.3" in lab and "22b" in lab:
                     return mt
             return choices[0][1] if choices else None
         _model_value = _pick_default_model(_model_choices)
         if _model_value:
             self._selected_model_type = _model_value
+            try:
+                _lbl = next((l for l, m in _model_choices if m == _model_value), _model_value)
+                log.info("LTX Director: default model -> %s (%s)", _lbl, _model_value)
+            except Exception:
+                pass
+            try:
+                _lbl = next((l for l, m in _model_choices if m == _model_value), _model_value)
+                log.info("LTX Director: default model -> %s", _lbl)
+            except Exception:
+                pass
 
         with gr.Row(elem_id="wdc-model-row"):
             model_selector = gr.Dropdown(
@@ -1288,11 +1395,24 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             _initial_loras = self._list_loras_for_model(_model_value) if _model_value else []
             _init_sp_methods, _init_sp_ratios = (
                 self._spatial_choices_for_model(_model_value) if _model_value else (None, None))
+            # Honor the user's saved sliding-window defaults from the Video Gen
+            # tab (their {model}_settings.json) instead of hardcoding 129/9.
+            _saved = _early_saved if _model_value == _early_model else (
+                _wangp_model_saved_settings(_model_value) if _model_value else {})
+            _init_win_size = _saved.get("sliding_window_size", None) or self._init_win_size
+            _init_win_ovl  = _saved.get("sliding_window_overlap", None) or self._init_win_ovl
+            _init_win_disc = _saved.get("sliding_window_discard_last_frames", None) or self._init_win_disc
+            self._init_win_size = _init_win_size
+            self._init_win_ovl  = _init_win_ovl
+            self._init_win_disc = _init_win_disc
             adv_map, adv_tabs = _adv.build_advanced_ui(
                 show_lora_sliders=bool(_cfg.get("lora_show_sliders", True)),
                 initial_loras=_initial_loras,
                 initial_spatial_methods=_init_sp_methods,
                 initial_spatial_ratios=_init_sp_ratios,
+                initial_window_size=_init_win_size,
+                initial_window_overlap=_init_win_ovl,
+                initial_window_discard=_init_win_disc,
                 external_resolution=resolution,
                 external_resolution_group=resolution_group)
             with gr.Row():
@@ -1331,6 +1451,54 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         #  💾 SESSION  (save / load / recover — collapsed to declutter)
         # ═══════════════════════════════════════════════════════════════════
         with gr.Accordion("💾 Session — save, load & recover", open=False, elem_id="wdc-session"):
+            # ── Window-settings defaults ─────────────────────────────────────
+            with gr.Row(elem_id="wdc-winsettings-row"):
+                use_wangp_box = gr.Checkbox(
+                    value=bool(_cfg.get("use_wangp_settings", True)),
+                    label="Use WanGP's saved settings for window defaults",
+                    elem_id="wdc-use-wangp",
+                    info=("On: window size/overlap come from WanGP's saved "
+                          "per-model settings. Off: use this plugin's own saved "
+                          "defaults (set with the button below)."))
+            with gr.Row(elem_id="wdc-winsettings-btns"):
+                save_defaults_btn = gr.Button("💾 Save current as plugin default",
+                    variant="secondary", scale=1, elem_id="wdc-save-defaults")
+                restore_defaults_btn = gr.Button("↺ Restore WanGP defaults",
+                    variant="secondary", scale=1, elem_id="wdc-restore-defaults")
+            win_settings_status = gr.Markdown("", elem_id="wdc-winsettings-status")
+
+            def _on_use_wangp_change(v):
+                cfg = _load_config(); cfg["use_wangp_settings"] = bool(v); _save_config(cfg)
+                return ("Using **WanGP's** saved settings for window defaults."
+                        if v else "Using the **plugin's own** saved defaults.")
+            use_wangp_box.change(fn=_on_use_wangp_change, inputs=[use_wangp_box],
+                                 outputs=[win_settings_status])
+
+            def _save_plugin_defaults(ws, ov, dc):
+                try:
+                    cfg = _load_config()
+                    cfg["window_defaults"] = {
+                        "sliding_window_size": int(ws or 481),
+                        "sliding_window_overlap": int(ov or 17),
+                        "sliding_window_discard_last_frames": int(dc or 0)}
+                    # Saving plugin defaults implies the user wants to use them.
+                    cfg["use_wangp_settings"] = False
+                    _save_config(cfg)
+                    return (gr.update(value=False),
+                            f"Saved plugin default: **{int(ws or 481)}f** window / "
+                            f"**{int(ov or 17)}f** overlap. (Now using plugin defaults.)")
+                except Exception as e:
+                    return gr.update(), f"⚠️ Could not save: {e}"
+
+            def _restore_wangp_defaults():
+                cfg = _load_config()
+                cfg["use_wangp_settings"] = True
+                cfg.pop("window_defaults", None)
+                _save_config(cfg)
+                return (gr.update(value=True),
+                        "Restored: now using **WanGP's** saved settings for "
+                        "window defaults (plugin overrides cleared).")
+
             # Save row — inputs on the left, action buttons grouped on the right.
             with gr.Row(equal_height=True, elem_id="wdc-save-row"):
                 project_name_box = gr.Textbox(
@@ -2041,22 +2209,43 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                         continue
                     settings[k] = vv
 
-                # WanGP expects a SINGLE "spatial_upsampling" code, but the
-                # Advanced clone splits it into method + ratio. Recombine so
-                # spatial upsampling actually transfers (it was silently lost).
+                # WanGP expects a SINGLE "spatial_upsampling" code (e.g.
+                # "lanczos2", "vae1.5"), but the Advanced clone splits it into
+                # method + ratio for the UI exactly like WanGP's own tab does.
+                # Recombine using WanGP's real encoder so the value matches the
+                # generator byte-for-byte; fall back to a faithful local copy.
+                def _encode_spatial(method, scale):
+                    method = str(method or "")
+                    # strip any pipe-encoded ratio the fallback UI may produce
+                    # (e.g. "lanczos|1.5" -> method "lanczos", scale 1.5)
+                    if "|" in method:
+                        base, _, r = method.partition("|")
+                        method = base
+                        if scale in (None, ""):
+                            scale = r
+                    if method in ("", "none", "None", "Disabled", "disabled"):
+                        return ""
+                    # already a full code like "lanczos2"/"vae1.5"? keep as-is
+                    if any(ch.isdigit() for ch in method):
+                        return method
+                    try:
+                        import wgp as _wgp
+                        if hasattr(_wgp, "build_spatial_upsampling_value"):
+                            return _wgp.build_spatial_upsampling_value(method, scale)
+                    except Exception:
+                        pass
+                    # Faithful local copy of build_spatial_upsampling_value:
+                    try:
+                        sc = float(scale if scale not in (None, "") else 2.0)
+                    except Exception:
+                        sc = 2.0
+                    ratio = str(int(sc)) if sc.is_integer() else f"{sc:g}"
+                    return {"lanczos": f"lanczos{ratio}", "vae": f"vae{ratio}",
+                            "flashvsr": method, "flashvsr2pass": method}.get(method, "")
+
                 _sp_method = adv.get("spatial_upsampling_method")
                 _sp_ratio  = adv.get("spatial_upsampling_ratio")
-                if _sp_method not in (None, "", "none", "None", "Disabled", "disabled"):
-                    _code = str(_sp_method)
-                    # If the method is a bare family (e.g. "lanczos"/"vae") and a
-                    # ratio is given, append it the way WanGP encodes it.
-                    if _sp_ratio not in (None, ""):
-                        _rs = str(_sp_ratio).replace("x", "").strip()
-                        if _rs and not any(ch.isdigit() for ch in _code):
-                            _code = f"{_code}{_rs}"
-                    settings["spatial_upsampling"] = _code
-                elif _sp_method in ("none", "None", "Disabled", "disabled"):
-                    settings["spatial_upsampling"] = ""
+                settings["spatial_upsampling"] = _encode_spatial(_sp_method, _sp_ratio)
                 # If Advanced set a window size, honor the snapped pair set above.
                 if _win_size > 0:
                     settings["sliding_window_size"]    = _win_size
@@ -2437,8 +2626,17 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                     extra = {}
                     if key == "spatial_upsampling_method" and _sp_methods:
                         extra["choices"] = _sp_methods
-                    elif key == "spatial_upsampling_ratio" and _sp_ratios:
-                        extra["choices"] = _sp_ratios
+                    elif key == "spatial_upsampling_ratio":
+                        if _sp_ratios:
+                            extra["choices"] = _sp_ratios
+                        # Show the Scale box iff a spatial method is set in the
+                        # restored project (mirrors the live show/hide rule).
+                        _m = s.get("spatial_upsampling_method", "")
+                        extra["visible"] = bool(_m) and str(_m) not in (
+                            "", "none", "None", "Disabled", "disabled")
+                        if v is None:
+                            return gr.update(**extra)
+                        return gr.update(value=v, **extra)
                     if have_model:
                         extra["visible"] = vis.get(key, True)
                     if v is None:
@@ -2568,6 +2766,14 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 inputs=[model_selector, adv_map.get("resolution_group"), adv_map.get("resolution")],
                 outputs=[adv_map.get("resolution_group"), adv_map.get("resolution")],
                 show_progress="hidden",
+            ).then(
+                # After the model sets a Category, repopulate the Budget list
+                # FILTERED to that Category so the two never desync (Category
+                # 720p must not show 480p-tier budgets).
+                fn=self._budget_for_category,
+                inputs=[adv_map.get("resolution_group"), adv_map.get("resolution")],
+                outputs=[adv_map.get("resolution")],
+                show_progress="hidden",
             )
             refresh_models_btn.click(
                 fn=refresh_model_list, inputs=[],
@@ -2639,6 +2845,97 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                 fn=_on_category_change,
                 inputs=[_res_group, self.state],
                 outputs=[_res_comp], show_progress="hidden",
+            )
+
+        # ── Spatial Upsampling: show the Scale box only when a method is chosen
+        # (mirrors WanGP, where the ratio dropdown is hidden until you pick a
+        # method). ──────────────────────────────────────────────────────────
+        _sp_method_comp = adv_map.get("spatial_upsampling_method")
+        _sp_ratio_comp  = adv_map.get("spatial_upsampling_ratio")
+        if _sp_method_comp is not None and _sp_ratio_comp is not None:
+            def _on_spatial_method_change(method):
+                # Visible when a non-empty method is selected.
+                return gr.update(visible=bool(method) and str(method) not in
+                                 ("", "none", "None", "Disabled", "disabled"))
+            _sp_method_comp.change(
+                fn=_on_spatial_method_change,
+                inputs=[_sp_method_comp],
+                outputs=[_sp_ratio_comp], show_progress="hidden",
+            )
+
+        # ── Wire Save/Restore window-default buttons (need adv fields) ────────
+        _adv_ws_for_save = adv_map.get("sliding_window_size")
+        _adv_ov_for_save = adv_map.get("sliding_window_overlap")
+        _adv_dc_for_save = adv_map.get("sliding_window_discard_last_frames")
+        if _adv_ws_for_save is not None and _adv_ov_for_save is not None:
+            save_defaults_btn.click(
+                fn=_save_plugin_defaults,
+                inputs=[_adv_ws_for_save, _adv_ov_for_save,
+                        _adv_dc_for_save if _adv_dc_for_save is not None else _adv_ov_for_save],
+                outputs=[use_wangp_box, win_settings_status],
+            )
+            restore_defaults_btn.click(
+                fn=_restore_wangp_defaults,
+                inputs=[],
+                outputs=[use_wangp_box, win_settings_status],
+            )
+
+        # ── Timeline → Advanced window-settings sync ──────────────────────────
+        # When the user changes window size/overlap/discard in the timeline
+        # toolbar, those values are committed into timeline_data_box. Mirror
+        # them into the Advanced sliders so the two never disagree.
+        _adv_ws_comp = adv_map.get("sliding_window_size")
+        _adv_ov_comp = adv_map.get("sliding_window_overlap")
+        _adv_dc_comp = adv_map.get("sliding_window_discard_last_frames")
+        if _adv_ws_comp is not None and _adv_ov_comp is not None:
+            def _sync_timeline_to_advanced(tdata):
+                try:
+                    d = json.loads(tdata) if tdata else {}
+                except Exception:
+                    return gr.update(), gr.update(), gr.update()
+                # The window values may be nested under .timeline.
+                src = d.get("timeline", d) if isinstance(d, dict) else {}
+                ws = src.get("slidingWindowSize", None)
+                ov = src.get("slidingWindowOverlap", None)
+                dc = src.get("slidingWindowDiscard", None)
+                u_ws = gr.update(value=int(ws)) if ws not in (None, "", 0) else gr.update()
+                u_ov = gr.update(value=int(ov)) if ov not in (None, "") else gr.update()
+                u_dc = gr.update(value=int(dc)) if dc not in (None, "") else gr.update()
+                return u_ws, u_ov, u_dc
+            _sync_outputs = [_adv_ws_comp, _adv_ov_comp]
+            if _adv_dc_comp is not None:
+                _sync_outputs.append(_adv_dc_comp)
+            def _sync_wrap(tdata):
+                r = _sync_timeline_to_advanced(tdata)
+                return r if _adv_dc_comp is not None else (r[0], r[1])
+            timeline_data_box.change(
+                fn=_sync_wrap,
+                inputs=[timeline_data_box],
+                outputs=_sync_outputs,
+                show_progress="hidden",
+            )
+
+        # ── Audio: show the column matching the selected post-process mode
+        # (MMAudio prompts / Custom soundtrack upload / Control note), mirroring
+        # WanGP's conditional layout. ───────────────────────────────────────
+        _pa_comp = adv_map.get("postprocess_audio")
+        _audio_cols = adv_map.get("_audio_cols") or {}
+        if _pa_comp is not None and _audio_cols:
+            _col_mmaudio = _audio_cols.get("mmaudio")
+            _col_control = _audio_cols.get("control")
+            _col_custom  = _audio_cols.get("custom")
+            _audio_outputs = [c for c in (_col_mmaudio, _col_control, _col_custom) if c is not None]
+            def _on_postprocess_audio_change(mode):
+                m = str(mode or "")
+                ups = []
+                if _col_mmaudio is not None: ups.append(gr.update(visible=(m == "mmaudio")))
+                if _col_control is not None: ups.append(gr.update(visible=(m == "control")))
+                if _col_custom  is not None: ups.append(gr.update(visible=(m == "custom")))
+                return ups if len(ups) != 1 else ups[0]
+            _pa_comp.change(
+                fn=_on_postprocess_audio_change,
+                inputs=[_pa_comp],
+                outputs=_audio_outputs, show_progress="hidden",
             )
 
         # ── LoRA strength sliders (fixed pool, queue-safe) ─────────────────
@@ -2903,15 +3200,34 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         return f"`{'█' * filled}{'░' * (width - filled)}` {int(frac * 100)}%"
 
     def _spatial_choices_for_model(self, model_type: str):
-        """Return (method_choices, ratio_choices) for the Post Processing
-        Spatial Upsampling dropdowns, pulled live from WanGP's upsampler API so
-        all real options (incl. model VAE upsamplers) are available. Returns
-        (None, None) if the API can't be reached."""
+        """Return (method_choices, ratio_choices) for the Spatial Upsampling
+        dropdowns. Tries, in order: WanGP's module-level choice constants
+        (SPATIAL_UPSAMPLING_METHOD_CHOICES / SPATIAL_UPSAMPLING_RATIO_CHOICES),
+        then the older upsamplers API, then None (so the UI uses its built-in
+        complete fallback). This keeps the options in sync with whatever WanGP
+        build is installed instead of hardcoding a partial list."""
+        def _san(ch):
+            if not ch:
+                return None
+            out = []
+            for it in ch:
+                if isinstance(it, (list, tuple)) and len(it) >= 2:
+                    out.append((str(it[0]), it[1]))
+            return out or None
+
+        # 1) WanGP module constants (this is what the real tab uses).
+        try:
+            import wgp as _wgp
+            methods = _san(getattr(_wgp, "SPATIAL_UPSAMPLING_METHOD_CHOICES", None))
+            ratios  = _san(getattr(_wgp, "SPATIAL_UPSAMPLING_RATIO_CHOICES", None))
+            if methods or ratios:
+                return methods, ratios
+        except Exception:
+            pass
+
+        # 2) Older upsamplers API (if this WanGP build has it).
         try:
             from postprocessing import upsamplers as _ups
-        except Exception:
-            return None, None
-        try:
             model_def = {}
             if self._wangp_session is not None and model_type:
                 model_def = self._wangp_session.get_model_def(model_type) or {}
@@ -2920,17 +3236,9 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             except Exception:
                 vae_choices = []
             state = _ups.dropdown_state("", image_outputs=False, vae_choices=vae_choices)
-            def _san(ch):
-                if not ch:
-                    return None
-                out = []
-                for it in ch:
-                    if isinstance(it, (list, tuple)) and len(it) >= 2:
-                        out.append((str(it[0]), it[1]))
-                return out or None
             return _san(state.get("method_choices")), _san(state.get("ratio_choices"))
         except Exception as exc:
-            log.info("Spatial upsampling choices unavailable: %s", exc)
+            log.info("Spatial upsampling choices unavailable, using fallback: %s", exc)
             return None, None
 
     def _list_loras_for_model(self, model_type: str) -> list:
@@ -2986,7 +3294,22 @@ class LTXDirectorPlugin(WAN2GPPlugin):
     # ── Iframe builder ─────────────────────────────────────────────────────
 
     def _build_editor_html(self) -> str:
-        encoded = base64.b64encode(TIMELINE_EDITOR_HTML.encode("utf-8")).decode("ascii")
+        html = TIMELINE_EDITOR_HTML
+        # Seed the timeline's initial window size/overlap from the user's saved
+        # model settings (so it isn't stuck at the hardcoded 129/9). Falls back
+        # to WanGP's own defaults (129 size / 17 overlap) when nothing saved.
+        try:
+            ws = int(getattr(self, "_init_win_size", None) or 481)
+            ov = int(getattr(self, "_init_win_ovl", None) or 17)
+            dc = int(getattr(self, "_init_win_disc", None) or 0)
+            html = html.replace("let winSize     = 481;", f"let winSize     = {ws};")
+            html = html.replace("let winOverlap  = 17;", f"let winOverlap  = {ov};")
+            html = html.replace("let winDiscard  = 0;", f"let winDiscard  = {dc};")
+            html = html.replace('id="ctrl-win" value="481"', f'id="ctrl-win" value="{ws}"')
+            html = html.replace('id="ctrl-ovl" value="17"', f'id="ctrl-ovl" value="{ov}"')
+        except Exception:
+            pass
+        encoded = base64.b64encode(html.encode("utf-8")).decode("ascii")
         return (
             f'<iframe id="wdc-timeline-iframe" '
             f'src="data:text/html;charset=utf-8;base64,{encoded}" '
@@ -3388,9 +3711,9 @@ input[type=range].slider::-webkit-slider-thumb {
   <input class="num-input" type="number" id="ctrl-dur" value="5" min="0.5" max="600" step="0.5" title="Total length of the video in seconds">
   <div class="sep"></div>
   <span class="lbl" title="Frames per sliding window">Win</span>
-  <input class="num-input" type="number" id="ctrl-win" value="129" min="41" max="2001" step="8" title="Sliding window size (frames)">
+  <input class="num-input" type="number" id="ctrl-win" value="481" min="41" max="2001" step="8" title="Sliding window size (frames)">
   <span class="lbl" title="Frames overlapping the previous window">Ovl</span>
-  <input class="num-input" type="number" id="ctrl-ovl" value="9" min="1" max="97" step="8" title="Window overlap (frames)">
+  <input class="num-input" type="number" id="ctrl-ovl" value="17" min="1" max="97" step="8" title="Window overlap (frames)">
   <span class="lbl" id="win-info" style="color:#5a80b0" title="windows × new frames contributed by each window after the first"></span>
   <label class="lbl" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer" title="Show sliding-window bands and boundary warnings">
     <input type="checkbox" id="ctrl-show-win" checked> bands
@@ -3469,8 +3792,8 @@ let segs  = [];   // {id,type:'image'|'text',start,length,prompt,imageB64,imgObj
 let audio = [];   // {id,type:'audio',start,length,trimStart,audioB64,fileName}
 
 // ── Sliding windows ──────────────────────────────────────────────────────────
-let winSize     = 129;   // frames per sliding window (WanGP LTX default)
-let winOverlap  = 9;     // overlap frames between consecutive windows
+let winSize     = 481;   // frames per sliding window (WanGP LTX2 default)
+let winOverlap  = 17;    // overlap frames between consecutive windows (WanGP default)
 let winDiscard  = 0;     // discard last frames (WanGP stride = size - discard - overlap)
 let wangpMaxPos = 3000;  // WanGP max_source_video_frames (synced from generator)
 let allowPastCap = false;// override: if on, don't show the over-cap warning as blocking
@@ -3936,15 +4259,23 @@ function drawSeg(seg, track) {
     if (host && host.end > wangpMaxPos) overCap = true;
   }
   if (overCap) {
-    ctx.strokeStyle = '#ff5555';
-    ctx.lineWidth = 2.5; ctx.setLineDash([4,3]);
+    // Prominent solid red border on the segment itself so it's obvious the
+    // clip's window runs past WanGP's max frames (not just a small label).
+    ctx.save();
+    ctx.shadowColor = 'rgba(255,60,60,0.8)';
+    ctx.shadowBlur = 5;
+    ctx.strokeStyle = '#ff3b3b';
+    ctx.lineWidth = 3;
     roundRect(x, trackY+2, w, trackH-4, 4); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#ff7777'; ctx.font = 'bold 10px sans-serif';
+    ctx.restore();
+    // tinted overlay so the whole clip reads as flagged
+    ctx.fillStyle = 'rgba(255,60,60,0.12)';
+    roundRect(x, trackY+2, w, trackH-4, 4); ctx.fill();
+    ctx.fillStyle = '#ff9a9a'; ctx.font = 'bold 10px sans-serif';
     const capSec = (wangpMaxPos / Math.max(1, fps)).toFixed(0);
     if (w > 30) ctx.fillText('⚠ past ' + capSec + 's cap', x + 5, trackY + 14);
   }
-  if (crosses.length) {
+  if (crosses.length && !overCap) {
     ctx.strokeStyle = '#ffb84d';
     ctx.lineWidth = 2; ctx.setLineDash([5,3]);
     roundRect(x, trackY+2, w, trackH-4, 4); ctx.stroke();
@@ -3971,11 +4302,16 @@ function drawSeg(seg, track) {
       // Inner accent line for contrast against light content
       ctx.strokeStyle = '#4aa3ff'; ctx.lineWidth = 1;
       roundRect(x+1.5, trackY+3.5, w-3, trackH-7, 3); ctx.stroke();
-    } else {
+    } else if (!overCap) {
       ctx.strokeStyle = (isAudio ? '#2a7abf' : (seg.type==='text' ? '#6060b0' : '#2a7a4a'));
       ctx.lineWidth = 1;
       roundRect(x, trackY+2, w, trackH-4, 4); ctx.stroke();
     }
+  }
+  if (sel && overCap) {
+    // Keep a selection ring visible on an over-cap (red) segment.
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    roundRect(x-1, trackY+1, w+2, trackH-2, 5); ctx.stroke();
   }
   if (sel && crosses.length) {
     // Keep the white selection ring visible on warned segments
@@ -4456,7 +4792,7 @@ document.getElementById('btn-clear').addEventListener('click', () => {
 });
 
 // Delete selected
-document.getElementById('btn-del-seg').addEventListener('click', () => {
+function deleteSelectedSeg() {
   if (!selId) return;
   if (selTrack==='audio') {
     if (activeSrcs[selId]) { try { activeSrcs[selId].stop(); } catch(e){} delete activeSrcs[selId]; }
@@ -4464,7 +4800,71 @@ document.getElementById('btn-del-seg').addEventListener('click', () => {
     audio = audio.filter(s => s.id!==selId);
   }
   else                    segs  = segs.filter(s  => s.id!==selId);
-  selId = null; updateProps(); commit();
+  selId = null; updateProps(); render(); commit();
+  setStatus('Deleted segment.');
+}
+document.getElementById('btn-del-seg').addEventListener('click', deleteSelectedSeg);
+
+// ── Copy / paste ──────────────────────────────────────────────────────────
+let _clipboard = null;   // { track, seg(clone without DOM objects) }
+
+function copySelectedSeg() {
+  if (!selId) { setStatus('Nothing selected to copy.'); return; }
+  const arr = selTrack==='audio' ? audio : segs;
+  const s = arr.find(x => x.id===selId);
+  if (!s) return;
+  const { imgObj, ...rest } = s;   // drop the decoded <img> object
+  _clipboard = { track: selTrack, seg: JSON.parse(JSON.stringify(rest)) };
+  setStatus('Copied ' + (s.type || selTrack) + '.');
+}
+
+function pasteClipboardSeg() {
+  if (!_clipboard) { setStatus('Clipboard is empty.'); return; }
+  const ns = Object.assign({}, JSON.parse(JSON.stringify(_clipboard.seg)));
+  ns.id = uid();
+  ns.start = clamp(playhead, 0, durF() - Math.max(1, ns.length||1));  // paste at playhead
+  if (_clipboard.track === 'audio') {
+    audio.push(ns); ensureDecoded(ns); selTrack = 'audio';
+  } else {
+    if (ns.imageB64) { const im = new Image(); im.onload = render; im.src = ns.imageB64; ns.imgObj = im; }
+    segs.push(ns); selTrack = 'image';
+  }
+  selId = ns.id; updateProps(); render(); commit();
+  setStatus('Pasted at playhead.');
+}
+
+// ── Keyboard shortcuts ─────────────────────────────────────────────────────
+// Active only when the timeline iframe has focus, and never while typing in a
+// text field (so prompt editing isn't hijacked).
+window.addEventListener('keydown', e => {
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
+
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); copySelectedSeg(); return; }
+  if (ctrl && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); pasteClipboardSeg(); return; }
+
+  switch (e.key) {
+    case 'Delete': case 'Backspace':
+      if (selId) { e.preventDefault(); deleteSelectedSeg(); }
+      break;
+    case 'ArrowLeft': {
+      e.preventDefault();
+      const step = e.shiftKey ? Math.round(fps) : 1;   // Shift = 1 second jump
+      setPlayhead(clamp(playhead - step, 0, durF()));
+      break;
+    }
+    case 'ArrowRight': {
+      e.preventDefault();
+      const step = e.shiftKey ? Math.round(fps) : 1;
+      setPlayhead(clamp(playhead + step, 0, durF()));
+      break;
+    }
+    case ' ':
+      e.preventDefault();
+      document.getElementById('btn-play').click();   // Space = play/pause
+      break;
+  }
 });
 
 // ── Properties panel ─────────────────────────────────────────────────────

@@ -143,7 +143,8 @@ ADV_FIELD_ORDER: List[str] = [
     "temporal_upsampling", "spatial_upsampling_method", "spatial_upsampling_ratio",
     "film_grain_intensity", "film_grain_saturation",
     # Audio
-    "postprocess_audio", "MMAudio_prompt", "MMAudio_neg_prompt",
+    "postprocess_audio", "postprocess_audio_prompt", "postprocess_audio_neg_prompt",
+    "audio_source", "replace_voice_method", "replace_voice_sample", "replace_voice_sample2",
     # Quality
     "perturbation_switch", "perturbation_layers",
     "perturbation_start_perc", "perturbation_end_perc",
@@ -359,6 +360,9 @@ def build_advanced_ui(show_lora_sliders: bool = True,
                       initial_loras: list | None = None,
                       initial_spatial_methods: list | None = None,
                       initial_spatial_ratios: list | None = None,
+                      initial_window_size=None,
+                      initial_window_overlap=None,
+                      initial_window_discard=None,
                       external_resolution=None,
                       external_resolution_group=None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build the 8-tab Advanced clone. Returns (components, tabs) where
@@ -380,9 +384,12 @@ def build_advanced_ui(show_lora_sliders: bool = True,
             with gr.Row():
                 c["seed"] = gr.Slider(-1, 999999999, value=-1, step=1,
                                       label="Seed (-1 for random)", scale=2)
+                # LTX-2 distilled exposes guidance_max_phases=2 / visible_phases=0,
+                # so WanGP shows this as a "Phases" dropdown with One/Two options
+                # (default 2). It is NOT hidden for these models.
                 c["guidance_phases"] = gr.Dropdown(
-                    choices=[("One Phase", 1), ("Two Phases", 2), ("Three Phases", 3)],
-                    value=2, label="Guidance Phases", visible=False, allow_custom_value=True)
+                    choices=[("One Phase", 1), ("Two Phases", 2)],
+                    value=2, label="Phases", visible=True, allow_custom_value=True)
             with gr.Row():
                 c["model_switch_phase"] = gr.Dropdown(
                     choices=[("Phase 1-2 transition", 1), ("Phase 2-3 transition", 2)],
@@ -538,12 +545,16 @@ def build_advanced_ui(show_lora_sliders: bool = True,
                 c["spatial_upsampling_method"] = gr.Dropdown(
                     choices=(initial_spatial_methods or
                              [("None", ""), ("Lanczos", "lanczos"),
-                              ("Lanczos x1.5", "lanczos|1.5"), ("Lanczos x2", "lanczos|2")]),
+                              ("FlashVSR", "flashvsr"),
+                              ("FlashVSR Two Pass", "flashvsr2pass"),
+                              ("VAE Upscaling", "vae")]),
                     value="", scale=3, allow_custom_value=True,
                     label="Spatial Upsampling")
                 c["spatial_upsampling_ratio"] = gr.Dropdown(
                     choices=(initial_spatial_ratios or
-                             [("x1.25", 1.25), ("x1.5", 1.5), ("x2", 2.0)]),
+                             [("x1.0", 1.0), ("x1.5", 1.5), ("x2.0", 2.0),
+                              ("x2.5", 2.5), ("x3.0", 3.0), ("x3.5", 3.5),
+                              ("x4.0", 4.0)]),
                     value=2.0, scale=1, allow_custom_value=True,
                     label="Scale", visible=False)
             with gr.Row():
@@ -555,14 +566,53 @@ def build_advanced_ui(show_lora_sliders: bool = True,
         # ── Audio ──────────────────────────────────────────────────────────
         with gr.Tab("Audio", elem_id="wdc-adv-tab-audio") as t_audio:
             tabs["audio"] = t_audio
-            c["postprocess_audio"] = gr.Dropdown(
-                choices=[("None", ""), ("MMAudio", "mmaudio"),
-                         ("Reuse Control Video audio", "control"),
-                         ("Custom soundtrack", "custom")],
-                value="", label="Postprocess Remux Audio", allow_custom_value=True)
-            with gr.Row():
-                c["MMAudio_prompt"] = gr.Textbox(value="", label="MMAudio Prompt (1-2 keywords)")
-                c["MMAudio_neg_prompt"] = gr.Textbox(value="", label="MMAudio Negative Prompt")
+            _audio_native = False
+            try:
+                # Build the EXACT audio UI WanGP uses on its Video Gen tab, so
+                # this section looks and behaves identically (all conditional
+                # columns: MMAudio prompts, custom soundtrack, control reuse,
+                # voice replacement + samples). We pass simple shims for the
+                # ui_get / ui_defaults helpers it expects.
+                from postprocessing import audio_processors as _apa
+                _ui_defaults = {}
+                def _ui_get(key, default=None):
+                    return _ui_defaults.get(key, default)
+                _aui = _apa.create_generation_audio_ui(
+                    gr, _ui_get, _ui_defaults,
+                    any_control_video=True, update_form=False)
+                # Map WanGP's components into our field dict (real field names).
+                c["postprocess_audio"]          = _aui["postprocess_audio"]
+                c["postprocess_audio_prompt"]   = _aui["postprocess_audio_prompt"]
+                c["postprocess_audio_neg_prompt"] = _aui["postprocess_audio_neg_prompt"]
+                c["audio_source"]               = _aui["audio_source"]
+                c["replace_voice_method"]       = _aui["replace_voice_method"]
+                c["replace_voice_sample"]       = _aui["replace_voice_sample"]
+                c["replace_voice_sample2"]      = _aui["replace_voice_sample2"]
+                # WanGP wires its own show/hide handlers internally, so we don't
+                # need to. Stash nothing for the plugin to manage.
+                c["_audio_native"] = True
+                _audio_native = True
+            except Exception as _aex:
+                # Fallback: hand-built simplified audio UI (older WanGP without
+                # the audio_processors API).
+                c["postprocess_audio"] = gr.Dropdown(
+                    choices=[("None", ""),
+                             ("Custom Soundtrack", "custom"),
+                             ("MMAudio (generate Audio Based on Video Content)", "mmaudio"),
+                             ("Control Video Audio Track (Reuse Control Video Audio Track)", "control")],
+                    value="", scale=1, allow_custom_value=True,
+                    label="Postprocess Remux Audio")
+                with gr.Column(visible=False) as _mmaudio_col:
+                    with gr.Row():
+                        c["postprocess_audio_prompt"] = gr.Textbox(value="", label="Prompt (1 or 2 keywords)")
+                        c["postprocess_audio_neg_prompt"] = gr.Textbox(value="", label="Negative Prompt (1 or 2 keywords)")
+                with gr.Column(visible=False) as _control_col:
+                    gr.Markdown("<B>Reuse the Control Video audio track</B>")
+                with gr.Column(visible=False) as _custom_col:
+                    c["audio_source"] = gr.Audio(value=None, type="filepath",
+                        label="Soundtrack", show_download_button=True)
+                c["_audio_cols"] = {"mmaudio": _mmaudio_col,
+                                    "control": _control_col, "custom": _custom_col}
 
         # ── Quality ────────────────────────────────────────────────────────
         with gr.Tab("Quality", elem_id="wdc-adv-tab-quality", visible=False) as t_quality:
@@ -602,12 +652,15 @@ def build_advanced_ui(show_lora_sliders: bool = True,
                         "duration not limited by the Model. It turns on "
                         "automatically when frames > Window Size.</B>")
             with gr.Row():
-                c["sliding_window_size"] = gr.Slider(41, 737, value=129, step=8,
+                _ws_default = int(initial_window_size) if initial_window_size else 481
+                _ov_default = int(initial_window_overlap) if initial_window_overlap else 17
+                _disc_default = int(initial_window_discard) if initial_window_discard else 0
+                c["sliding_window_size"] = gr.Slider(41, 737, value=_ws_default, step=8,
                     label="Sliding Window Size (frames)")
-                c["sliding_window_overlap"] = gr.Slider(1, 97, value=9, step=8,
+                c["sliding_window_overlap"] = gr.Slider(1, 97, value=_ov_default, step=8,
                     label="Window Frames Overlap")
             with gr.Row():
-                c["sliding_window_discard_last_frames"] = gr.Slider(0, 40, value=0, step=8,
+                c["sliding_window_discard_last_frames"] = gr.Slider(0, 40, value=_disc_default, step=8,
                     label="Discard Last Frames of Window")
                 c["sliding_window_overlap_noise"] = gr.Slider(0, 100, value=20, step=1,
                     label="Overlap Noise", visible=False)
@@ -694,8 +747,10 @@ ADV_FIELD_HELP: Dict[str, str] = {
     "film_grain_intensity": "Adds film grain. 0 = none; higher = more grain for a filmic look.",
     "film_grain_saturation": "Color saturation of the added film grain.",
     "postprocess_audio": "Run audio post-processing (e.g. MMAudio) after the video is generated.",
-    "MMAudio_prompt": "Text describing the sound/ambience to generate for the video.",
-    "MMAudio_neg_prompt": "Sounds to avoid in the generated audio.",
+    "postprocess_audio_prompt": "Text describing the sound/ambience to generate for the video.",
+    "postprocess_audio_neg_prompt": "Sounds to avoid in the generated audio.",
+    "replace_voice_method": "Replace spoken voice in the video using SeedVC (one or two speakers).",
+    "audio_source": "Custom soundtrack file to remux onto the generated video.",
     "perturbation_switch": "Enables perturbed-attention guidance, which can improve detail and coherence.",
     "perturbation_layers": "Which model layers the perturbation is applied to.",
     "perturbation_start_perc": "Percentage of steps after which perturbation begins.",
