@@ -1,81 +1,274 @@
-# LTX-Director
-Wan2GP plugin ported from a ComfyUI node found here https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI 
+<!--
+  HOW TO USE THIS FILE
+  - Replace every [SCREENSHOT: ...] line with your own image, e.g.
+        ![Timeline overview](images/timeline.png)
+  - Delete any section you don't want.
+  - Everything here is plain Markdown, so it works on GitHub, most forums, and Reddit.
+-->
 
-this is designed for image injection and workflow enhancement. Maintained for Wan2GP integration and usability.
-https://github.com/deepbeepmeep/Wan2GP.git
+# LTX Director
+
+**A timeline-based storyboard editor for LTX video generation in Wan2GP (WanGP).**
+
+Place image keyframes, text prompts, and audio on a visual timeline, then send the
+whole thing to WanGP to generate one continuous video. Think of it as a lightweight
+"director's timeline" that sits on top of WanGP's generator.
+
+> Version: **1.3.23** · Author: **The-ShadowWalker**
 
 
-v1.3.16
+<img width="1917" height="895" alt="Screenshot 2026-06-28 142725" src="https://github.com/user-attachments/assets/cf16d430-4815-4bcb-9d01-e5ea51de0c74" />
+
+
+---
+
+## What it does
+
+- **Visual timeline.** Drop image keyframes, text prompts, and audio clips onto a
+  scrollable timeline and arrange them in time.
+- **Keyframe injection.** Images are placed at exact frame positions and injected into
+  the generation, so your video hits the shots you set when you set them.
+- **Audio track.** Add one or more audio clips; they're mixed into a single soundtrack
+  with gaps preserved, and lined up to the timeline.
+- **Sliding-window aware.** The timeline shows WanGP's sliding-window layout so you can
+  see where window boundaries fall and avoid placing keyframes badly.
+- **Long-timeline support.** An optional override lets you generate past WanGP's default
+  injected-frame cap (see *Going past the frame cap* below).
+- **Mirrors WanGP's settings.** An Advanced panel reproduces WanGP's generation
+  settings (model, resolution, sliding window, LoRAs, post-processing, audio, etc.) so
+  you don't have to leave the plugin.
+
+---
+
+## Requirements
+
+- A working **Wan2GP (WanGP)** install with an **LTX-2** model downloaded.
+- That's it — the plugin uses the dependencies WanGP already provides (nothing extra to
+  install). A `requirements.txt` is included for reference only.
+
+---
+
+
+---
+
+## Quick start
+
+1. Open the **LTX Director** tab.
+2. Set your video length (duration) and fps at the top.
+3. **Double-click** an empty spot on the timeline to add a text prompt, or use the add
+   buttons to drop an image keyframe or audio clip.
+4. Drag clips to position them; drag their edges to resize.
+5. Open **Advanced** and confirm your model, resolution, and sliding-window settings.
+6. Click **Generate** and let WanGP render the timeline.
+
+
+---
+
+## The timeline toolbar
+
+The toolbar above the timeline holds the per-timeline controls:
+
+| Control | What it does |
+|---|---|
+| **fps / duration** | Frame rate and total length of the video. |
+| **bands** | Show/hide the sliding-window bands and boundary markers. |
+| **snap** | Snap clip edges to other clips, the playhead, and window boundaries while dragging. Hold **Alt** to bypass. |
+| **past cap** | Allow timelines longer than WanGP's injected-frame cap (asks for confirmation — see below). |
+| **Play** | Preview the timeline with the playhead and audio. |
+| **Clear** | Remove everything from the timeline (click twice to confirm). |
+
+[SCREENSHOT: close-up of the toolbar showing the bands / snap / past cap checkboxes]
+
+---
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| **Ctrl/Cmd + C** | Copy the selected segment |
+| **Ctrl/Cmd + V** | Paste at the playhead |
+| **Delete / Backspace** | Delete the selected segment |
+| **← / →** | Move the playhead one frame |
+| **Shift + ← / →** | Move the playhead one second |
+| **Space** | Play / pause |
+
+(Shortcuts are ignored while you're typing in a text box, so prompt editing isn't affected.)
+
+---
+
+## Advanced settings
+
+The **Advanced** panel mirrors WanGP's generation settings, grouped into tabs:
+
+- **General** — seed, phases, guidance.
+- **Sliding Window** — window size, overlap, discard-last-frames.
+- **LoRAs** — pick and weight LoRAs for the model.
+- **Quality** — perturbation, CFG-star/zero, and related quality options.
+- **Steps Skipping** — step-skipping / acceleration options.
+- **Post Processing** — spatial/temporal upsampling, film grain.
+- **Audio** — post-process remux: MMAudio, custom soundtrack, control-video audio, voice replacement.
+
+Defaults are tuned for LTX-2: model **LTX-2 2.3 Distilled 1.1 22B**, category **720p**,
+budget **720x1280 (9:16)**. Changing the model updates the resolution options to match.
+
+<img width="1893" height="938" alt="Screenshot 2026-06-28 143107" src="https://github.com/user-attachments/assets/7a3afda4-3ffa-4cfd-9191-9e92696a5e73" />
+
+<img width="1895" height="909" alt="Screenshot 2026-06-28 143309" src="https://github.com/user-attachments/assets/2eb98764-09cd-44b5-9d5a-040cbeb65509" />
+
+---
+
+## Window settings & defaults
+
+The sliding-window size/overlap default to WanGP's LTX-2 values (**481 / 17**), or to
+whatever you've saved as your default.
+
+In the **Session** panel you can choose where window defaults come from:
+
+- **Use WanGP's saved settings** (checkbox on) — pulls from WanGP's own per-model
+  settings, i.e. whatever you saved as default on the Video Generation tab.
+- **Plugin defaults** (checkbox off) — use the plugin's own saved values instead.
+- **💾 Save current as plugin default** — store the current window values as the plugin's
+  default.
+- **↺ Restore WanGP defaults** — clear the plugin override and go back to WanGP's settings.
+
+Changing window size/overlap in the timeline toolbar also updates the Advanced fields so
+the two stay in sync.
+
+[SCREENSHOT: the Session panel showing the settings checkbox and the save/restore buttons]
+
+---
+
+## Going past the frame cap (long videos)
+
+WanGP limits **injected-frame positions** to its `max_source_video_frames` cap
+(by default ~125 seconds at 24 fps). Note this limit applies to *injected keyframes*, not
+to start/end-image videos.
+
+If you want a longer injected-keyframe timeline:
+
+1. Tick **past cap** in the timeline toolbar and confirm the warning.
+2. On each generation the plugin raises WanGP's cap to fit your whole timeline — no need
+   to edit any WanGP files.
+3. Turn it off and WanGP returns to its normal limit the same session.
+
+Segments whose window runs past the cap are flagged with a **red border** on the timeline.
+
+> ⚠️ **At your own risk.** The cap exists to protect against running out of video memory.
+> Going past it can crash, run out of VRAM, or produce bad output on very long timelines —
+> keep an eye on your VRAM usage.
+
+<img width="1899" height="768" alt="Screenshot 2026-06-28 144803" src="https://github.com/user-attachments/assets/6ef77cc5-33bc-45aa-9fc5-1bc8aeaaf8f2" />
+
+
+---
+
+## Saving & loading projects
+
+- Work is **auto-saved** every few seconds, so a page freeze won't lose your timeline.
+- Use the **Session** panel to name a project, save it, load it back, or recover your last
+  session. Loading a project restores the timeline plus the model, category, resolution,
+  and window settings.
+
+---
+
+## Tips
+
+- Place your **first image** at the very start — it anchors the opening shot.
+- Watch the **window bands**: an image that lands right on a window seam transfers most
+  cleanly.
+- **Audio is one continuous track** — it spans the whole timeline and is never split at
+  window boundaries, so it won't be flagged like image/text segments.
+- If a setting in Advanced doesn't seem to match WanGP, check that you've selected the
+  right model first — resolution and window options update per model.
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Plugin doesn't load / prompts don't transfer | Make sure there's **only one** LTX Director folder in `plugins`, then restart WanGP. |
+| "Invalid Frame Position" on long videos | Enable **past cap** in the toolbar (see above). |
+| Window size shows the wrong default | Set your preferred size in Advanced and **Save current as plugin default**, or restore WanGP defaults. |
+| Model defaults to the wrong version | The plugin targets **LTX-2 2.3 Distilled 1.1 22B**; pick your model from the selector if your build names it differently. |
+
+---
+
+## Credits
+
+Created by **The-ShadowWalker**. Built on top of **Wan2GP** by DeepBeepMeep
+and the LTX-2 models by Lightricks.
+
+<!-- Add your links here: GitHub repo, TikTok/YouTube, support thread, etc. -->
+
+Changelog
+All notable changes to LTX Director are documented here.
+
+v1.3.23
+
+Added
+
+
+Keyboard shortcuts on the timeline: copy/paste (Ctrl/Cmd+C/V), Delete to
+remove the selected segment, ←/→ to move the playhead (Shift = 1-second
+jumps), Space to play/pause.
+Multi-clip audio mixing. Multiple audio clips are combined into one
+soundtrack with gaps preserved and positions matched to the timeline.
+Window-default settings. Choose whether window defaults come from WanGP's
+saved per-model settings or the plugin's own saved defaults, with buttons to
+save the current values as default or restore WanGP's.
+Timeline → Advanced sync. Changing the window size/overlap in the timeline
+toolbar updates the matching Advanced fields.
+
+
+Changed
+
+
+Audio settings now use WanGP's own audio UI, so the Audio tab matches the
+Video Generation tab exactly (MMAudio prompts, custom soundtrack, control-video
+audio, voice replacement), including the "Control Video Audio Track" option.
+Spatial Upsampling now shows the method + scale as two dropdowns with the
+full option set, and produces the exact value WanGP expects.
+"Phases" is now shown for LTX-2 distilled (One / Two Phases, default Two).
+Sliding-window default corrected to WanGP's LTX-2 values (481 / 17).
+
 
 Fixed
 
 
-Over-cap warning no longer over-fires. The warning now finds the actual
-sliding window a keyframe falls into and only flags it if that window
-extends past WanGP's frame cap. A keyframe whose window ends exactly on the
-cap is treated as fine — only windows that genuinely run past it are flagged.
-All cap/timing logic is settings-driven, not hardcoded. The warning label,
-the window layout, the risk dialog, and the "past the default" count are all
-computed from the live fps, window size/overlap, and the cap value read from
-WanGP — no hardcoded frame numbers or seconds.
+Default model now correctly selects LTX-2 2.3 Distilled 1.1 22B (was
+picking the 1.0 variant).
+Changing the model no longer desyncs the resolution (Category and Resolution
+Budget stay matched).
+Resolution Budget options were missing for some categories; all tiers now show
+their full list.
+Audio clips no longer show a false sliding-window boundary warning.
+Over-cap segments are flagged on the segment border, and the warning no longer
+over-fires (only windows that actually run past the cap are flagged).
+Minor fixes.
 
 
-Added
 
-
-Risk acknowledgment on the override. Enabling "past cap" now requires an
-explicit confirmation that explains it bypasses WanGP's built-in maximum
-frame limit, that the limit guards against running out of VRAM, and that the
-user proceeds at their own risk. Declining leaves it off.
-
-
-v1.3.15
+v1.3.12 – v1.3.16
 
 Added
 
 
-"Past cap" override moved into the timeline toolbar (next to bands/snap),
-so it's visible instead of buried in a collapsed panel.
-Session-safe cap handling. When the override is on, the plugin raises
-WanGP's max_source_video_frames to cover the whole timeline on each
-generation. When it's turned off, the cap is restored to WanGP's original
-value on the next generation, so behavior returns to normal within the same
-session without a restart.
+Long-timeline support past WanGP's frame cap. WanGP rejects injected-frame
+timelines beyond max_source_video_frames (~125s at 24fps), which blocked
+long renders. A "past cap" toggle in the timeline toolbar lets the plugin
+raise that cap to fit the whole project on each generation (no editing
+wgp.py). It reads and restores WanGP's real value, is session-safe (turning
+it off restores normal behavior), requires a risk acknowledgment to enable,
+and flags affected segments on the timeline.
 
-
-v1.3.14
-
-Added
-
-
-Plugin raises the cap itself. With the override on, the plugin sets
-WanGP's max_source_video_frames to fit the project on every generation, so
-long injected-frame timelines work without hand-editing wgp.py. The value
-is only ever raised, never lowered.
-
-
-v1.3.13
-
-Added
-
-
-Override toggle + live cap reading. The plugin reads WanGP's
-max_source_video_frames at runtime (instead of assuming a fixed number) and
-adds an override so injected-frame positions past the cap can be sent through
-rather than clamped.
-
-
-v1.3.12
 
 Fixed
 
 
-"Invalid Frame Position" error past ~120s. WanGP rejects injected image
-positions beyond its max_source_video_frames cap (3000 frames ≈ 125s at
-24fps). Long timelines hit this and the whole job was refused. Positions are
-now handled against that cap so generation isn't blocked, and an on-timeline
-marker flags keyframes that sit past it. The original keyframe position
-semantics are otherwise unchanged.
+"Invalid Frame Position" error on timelines past ~120s.
+Sliding-window count now accounts for "discard last frames."
+Minor fixes.
 
 
 
@@ -84,101 +277,15 @@ v1.3.11
 Fixed
 
 
-Sliding-window count now honors "Discard last frames." Window math was
-computing the stride as size − overlap, but the engine uses
-size − discard − overlap. With a non-zero discard setting the window count
-and the on-timeline window bands could drift from what the generator actually
-produced. Discard is now threaded through the count, the preview, the window
-bands, and save/restore. (Default discard is 0, so this only affected setups
-that changed it.)
-Verified the window-count formula against the Wan2GP reference across tens of
-thousands of valid configurations — it matches the engine exactly.
+Sliding-window count now honors "Discard last frames" so the window count and
+bands match the generator.
+Minor fixes.
 
+---
 
-v1.3.10
+## Credits
 
-Added
+Created by **The-ShadowWalker**. Built on top of **Wan2GP** by DeepBeepMeep
+and the LTX-2 models by Lightricks.
 
-
-requirements.txt for reference/documentation. A working Wan2GP install
-already provides every dependency the plugin uses (av, soundfile, numpy are
-in Wan2GP's own requirements; Pillow comes in transitively), so nothing
-normally needs installing — the file documents what the plugin imports and
-acts as a safety net for slimmed-down installs.
-
-
-v1.3.9
-
-Fixed
-
-
-Audio clips no longer show a false sliding-window boundary warning. Audio
-is a single continuous file that spans the whole timeline and is never split
-at window boundaries, so the crossing warning (border, ⚠ marker, and the
-properties-panel notice) no longer appears for audio. Image and text segments
-still get the warning, since those are genuinely window-bound.
-
-
-
-v1.3.8
-
-Fixed
-
-
-Resolution Budget now updates with the Category. Selecting a Category
-(e.g. 720p) repopulates the Resolution Budget list with that tier's options
-instead of leaving a stale/partial list. This now happens on the very first
-render and on project load — not only when you manually click the Category
-dropdown.
-720x1280 (9:16) is now available and selected by default. Previously the
-default budget couldn't be set because the 720p list wasn't built yet, so the
-value didn't "stick."
-All Category tiers show their complete option list. Verified each tier
-(256p / 320p / 384p / 480p / 540p / 720p / 1080p) exposes its full set — e.g.
-480p includes 832x624, 624x832, 720x720, 832x480, 480x832; 720p includes
-720x1280 plus the rest.
-Loading a saved project updates the Budget list to match the restored
-Category. All three load paths (Recover Last, Load Path, and file load) now
-refresh the budget choices after restoring the Category, while keeping the
-saved resolution selected.
-
-
-Notes
-
-
-Resolution-locked models are respected: if a model locks its resolutions, the
-plugin keeps that locked list instead of forcing the 720p default.
-
-
-
-v1.3.7
-
-Fixed
-
-
-Timeline "Clear" button now works. It previously relied on a confirmation
-dialog that the embedded timeline blocked, so clicking it did nothing. It now
-uses a two-step "click again to clear" confirmation that always works (and the
-dialog permission was added as a fallback).
-Model is restored when loading a project. Loading a saved or autosaved
-project now switches the Model selector back to the model that was in use when
-the project was saved. (Previously the model never changed on load.)
-Category is saved and restored. The Category (resolution tier) was not
-being tracked at all, so it was never saved or restored. It is now persisted
-with the project and restored on load. It remains a UI-only control and is not
-sent to the generator.
-Resolution Budget is restored. Now persists and restores correctly across
-Recover Last, Load Path, and file load.
-Selection borders are always visible. The selected segment is now drawn on
-top of its neighbours with a bright, high-contrast highlight, so its border no
-longer disappears behind an overlapping segment, making it easy to see what is
-selected and adjust it.
-
-
-Added
-
-
-Snap to edges, with a toggle. A new snap checkbox in the timeline
-toolbar. When on, segment edges snap to other segments, the playhead, and
-sliding-window boundaries while dragging. Hold Alt to bypass snapping
-momentarily.
+<!-- Add your links here: GitHub repo, TikTok/YouTube, support thread, etc. -->
