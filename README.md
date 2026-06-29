@@ -204,7 +204,18 @@ and the LTX-2 models by Lightricks.
 Changelog
 All notable changes to LTX Director are documented here.
 
-v1.3.23
+**v1.3.24**
+
+Added
+
+
+Apply to Generator now switches the model. Clicking "Apply to Generator"
+transfers the model to the Media Generator tab along with all settings (it
+previously transferred settings but left the model unchanged). Fix contributed
+by **GK Artist**.
+
+
+**V1.3.17 - v1.3.23**
 
 Added
 
@@ -249,7 +260,7 @@ Minor fixes.
 
 
 
-v1.3.12 – v1.3.16
+**v1.3.12 – v1.3.16**
 
 Added
 
@@ -272,7 +283,7 @@ Minor fixes.
 
 
 
-v1.3.11
+**v1.3.11**
 
 Fixed
 
