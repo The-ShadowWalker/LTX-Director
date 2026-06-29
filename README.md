@@ -200,9 +200,12 @@ Created by **The-ShadowWalker**. Built on top of **Wan2GP** by **DeepBeepMeep**
 and the LTX-2 models by Lightricks. contributors: **GK Artist**
 
 <!-- Add your links here: GitHub repo, TikTok/YouTube, support thread, etc. -->
+---
 
 Changelog
 All notable changes to LTX Director are documented here.
+
+---
 
 **v1.3.24**
 
@@ -214,6 +217,7 @@ transfers the model to the Media Generator tab along with all settings (it
 previously transferred settings but left the model unchanged). Fix contributed
 by **GK Artist**.
 
+---
 
 **V1.3.17 - v1.3.23**
 
@@ -258,7 +262,7 @@ Over-cap segments are flagged on the segment border, and the warning no longer
 over-fires (only windows that actually run past the cap are flagged).
 Minor fixes.
 
-
+---
 
 **v1.3.12 – v1.3.16**
 
@@ -281,7 +285,7 @@ Fixed
 Sliding-window count now accounts for "discard last frames."
 Minor fixes.
 
-
+---
 
 **v1.3.11**
 
