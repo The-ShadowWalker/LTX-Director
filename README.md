@@ -207,7 +207,7 @@ All notable changes to LTX Director are documented here.
 
 ---
 
-**v1.3.24**
+**v1.3.24 - v1.3.25**
 
 Added
 
