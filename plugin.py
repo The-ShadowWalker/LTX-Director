@@ -342,7 +342,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.3.23"
+PLUGIN_VERSION = "1.3.24"
 # v1.3.6:
 #  - FIX (Recover Last lost settings): the auto-backup payload omitted the
 #    Advanced settings, LoRAs, model and resolution — so Recover restored
@@ -2341,21 +2341,39 @@ class LTXDirectorPlugin(WAN2GPPlugin):
                     tdata, global_p, fps, duration_sec, epsilon, project_name, state,
                     adv_vals=adv_core or None, lora_sel=lora_sel, lora_mult=lora_mult,
                 )
+
+                # Switch Media Generator model to match LTX Director's model
+                target_mt = getattr(self, "_selected_model_type", "") or ""
+                current_mt = self._state_model_type(state)
+                if target_mt and target_mt != current_mt:
+                    # Save settings under target model so model_choice_target change
+                    # chain picks them up in fill_inputs().
+                    all_settings = state.get("all_settings", None)
+                    if all_settings is None:
+                        all_settings = {}
+                        state["all_settings"] = all_settings
+                    all_settings[target_mt] = settings
+                    mt_target = f"{target_mt}|{_time.time()}"
+                    refresh = gr.update()
+                else:
+                    mt_target = gr.update()
+                    refresh = gr.update(value=str(_time.time()))
+
                 msg = (f"✅ Applied — {', '.join(parts)}.  \n"
                        f"Switch to **Video Generator** and click Generate.")
-                gr.Info("LTX Director → Generator: settings transferred.")
-                return msg, gr.update(value=str(_time.time()))
+                gr.Info("LTX Director → Generator: model switched + settings transferred.")
+                return msg, mt_target, refresh
             except ValueError as ve:
-                return f"⚠️ {ve}", gr.update()
+                return f"⚠️ {ve}", gr.update(), gr.update()
             except Exception as e:
                 log.error("Apply error: %s", traceback.format_exc())
-                return f"❌ Error: {e}", gr.update()
+                return f"❌ Error: {e}", gr.update(), gr.update()
 
         def apply_and_generate(tdata, global_p, fps, duration_sec, epsilon, project_name, state, *adv_vals):
-            msg, refresh = apply_to_generator(tdata, global_p, fps, duration_sec, epsilon,
-                                              project_name, state, *adv_vals)
+            msg, mt_target, refresh = apply_to_generator(tdata, global_p, fps, duration_sec, epsilon,
+                                                         project_name, state, *adv_vals)
             # The JS bridge clicks the Generate button after this returns.
-            return msg, refresh
+            return msg, mt_target, refresh
 
         def generate_here(tdata, global_p, fps, duration_sec, epsilon, project_name,
                           state, *adv_vals):
@@ -3011,14 +3029,14 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             inputs=[timeline_data_box, global_prompt_box, fps_box, duration_box, epsilon_box,
                     project_name_box, self.state, *adv_components,
                     adv_map["loras_choices"], adv_map["loras_multipliers"]],
-            outputs=[status_md, self.refresh_form_trigger],
+            outputs=[status_md, self.model_choice_target, self.refresh_form_trigger],
         )
         generate_btn.click(
             fn=apply_and_generate,
             inputs=[timeline_data_box, global_prompt_box, fps_box, duration_box, epsilon_box,
                     project_name_box, self.state, *adv_components,
                     adv_map["loras_choices"], adv_map["loras_multipliers"]],
-            outputs=[status_md, self.refresh_form_trigger],
+            outputs=[status_md, self.model_choice_target, self.refresh_form_trigger],
         )
         clear_btn.click(
             fn=clear_timeline,
