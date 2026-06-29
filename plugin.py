@@ -342,7 +342,7 @@ log = logging.getLogger(__name__)
 PlugIn_Id   = "LTXDirector"
 PlugIn_Name = "LTX Director"
 
-PLUGIN_VERSION = "1.3.24"
+PLUGIN_VERSION = "1.3.25"
 # v1.3.6:
 #  - FIX (Recover Last lost settings): the auto-backup payload omitted the
 #    Advanced settings, LoRAs, model and resolution — so Recover restored
@@ -1597,6 +1597,10 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         generate_here_btn_h = gr.Button("generate_here_trigger", visible=False, elem_id="wdc-generate-here-trigger")
         preview_btn         = gr.Button("preview_trigger",       visible=False, elem_id="wdc-preview-trigger")
         clear_btn           = gr.Button("clear_trigger",         visible=False, elem_id="wdc-clear-trigger")
+        # Fired by JS a moment AFTER Apply switches the model, so the Media
+        # Generator form re-fills with the NEW model already active (fixing the
+        # one-pass-behind field visibility that otherwise needed a 2nd Apply).
+        postswitch_btn      = gr.Button("postswitch_trigger",    visible=False, elem_id="wdc-postswitch-trigger")
 
         schedule_md = gr.Markdown(visible=False)
         status_md   = gr.Markdown()
@@ -3024,6 +3028,19 @@ class LTXDirectorPlugin(WAN2GPPlugin):
             inputs=[timeline_data_box, global_prompt_box, fps_box, duration_box],
             outputs=[schedule_md],
         )
+        def _postswitch_refresh(state):
+            import time as _time
+            # Second-pass form refresh: runs after the model switch settled, so
+            # fill_inputs rebuilds the form with the NEW model's field layout
+            # AND the settings we saved under the target model.
+            return gr.update(value=str(_time.time()))
+        postswitch_btn.click(
+            fn=_postswitch_refresh,
+            inputs=[self.state],
+            outputs=[self.refresh_form_trigger],
+            show_progress="hidden",
+        )
+
         apply_btn.click(
             fn=apply_to_generator,
             inputs=[timeline_data_box, global_prompt_box, fps_box, duration_box, epsilon_box,
@@ -3541,6 +3558,10 @@ class LTXDirectorPlugin(WAN2GPPlugin):
         e.stopImmediatePropagation();
         wdcSendToIframe("get_state");
         setTimeout(function() { wdcClickTrigger("wdc-apply-trigger"); }, 250);
+        // After the model switch + tab rebuild settle, fire a second-pass form
+        // refresh so the NEW model's field layout (not the old one) is shown.
+        // This removes the need to click Apply twice.
+        setTimeout(function() { wdcClickTrigger("wdc-postswitch-trigger"); }, 1400);
       }, true);
     }
 
