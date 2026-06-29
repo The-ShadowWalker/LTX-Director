@@ -296,7 +296,7 @@ Minor fixes.
 
 ## Credits
 
-Created by **The-ShadowWalker**. Built on top of **Wan2GP** by DeepBeepMeep
-and the LTX-2 models by Lightricks.
+Created by **The-ShadowWalker**. Built on top of **Wan2GP** by **DeepBeepMeep**
+and the LTX-2 models by Lightricks. contributors: **GK Artist**
 
 <!-- Add your links here: GitHub repo, TikTok/YouTube, support thread, etc. -->
